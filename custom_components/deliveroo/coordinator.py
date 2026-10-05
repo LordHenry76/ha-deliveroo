@@ -20,6 +20,7 @@ from .api import (
     DeliverooError,
     DeliverooOrder,
     DeliverooOrderStatus,
+    parse_order_status,
 )
 from .const import (
     CONF_ACTIVE_INTERVAL,
@@ -32,7 +33,10 @@ from .const import (
     FALLBACK_IDLE_INTERVAL,
     LIGHT_API_RETRY,
     SESSION_REFRESH,
+    SIMULATION_DURATION,
+    SIMULATION_INTERVAL,
 )
+from .simulation import DEMO_ORDER_ID, build_demo_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -89,6 +93,7 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
         self._last_signature: tuple | None = None
         self._light_api_disabled_until: datetime | None = None
         self._last_page_read: datetime = dt_util.utcnow()
+        self._simulation_start: datetime | None = None
 
     @property
     def light_api_enabled(self) -> bool:
@@ -96,9 +101,40 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
         until = self._light_api_disabled_until
         return until is None or dt_util.utcnow() >= until
 
+    @property
+    def simulation_active(self) -> bool:
+        """Return True while the demo order is being replayed."""
+        return self._simulation_start is not None
+
     async def async_force_refresh(self) -> None:
         """Check for a new order now (used by the refresh button)."""
         await self.async_refresh()
+
+    async def async_start_simulation(self) -> None:
+        """Replay a full demo delivery; Deliveroo is not contacted meanwhile."""
+        self._simulation_start = dt_util.utcnow()
+        self._last_signature = None
+        await self.async_refresh()
+
+    def _simulate(self) -> DeliverooData:
+        """Return the current frame of the demo order."""
+        assert self._simulation_start is not None
+        start = self._simulation_start
+        payload = build_demo_payload(
+            (dt_util.utcnow() - start).total_seconds(),
+            SIMULATION_DURATION.total_seconds(),
+            lang=self.client.language,
+            start_local=dt_util.as_local(start),
+        )
+        status = parse_order_status(DEMO_ORDER_ID, payload)
+        self._fire_event_if_changed(status, simulated=True)
+        if status.is_completed:
+            # Show "completed" until the next regular poll, then back to normal.
+            self._simulation_start = None
+            self.update_interval = self.idle_interval
+            return DeliverooData(active_order_id=None, status=status)
+        self.update_interval = SIMULATION_INTERVAL
+        return DeliverooData(active_order_id=DEMO_ORDER_ID, status=status)
 
     # ── Website page: keep-alive, token recovery, fallback ──────────────────
 
@@ -218,6 +254,9 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
             raise ConfigEntryAuthFailed("Deliveroo rejected the session token") from err
 
     async def _async_update_data(self) -> DeliverooData:
+        if self._simulation_start is not None:
+            return self._simulate()
+
         if self._active_id is None:
             await self._async_detect_active()
 
@@ -250,7 +289,9 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
 
         return DeliverooData(active_order_id=self._active_id, status=status)
 
-    def _fire_event_if_changed(self, status: DeliverooOrderStatus) -> None:
+    def _fire_event_if_changed(
+        self, status: DeliverooOrderStatus, *, simulated: bool = False
+    ) -> None:
         signature = (
             status.order_id,
             status.state,
@@ -285,5 +326,6 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
                 "restaurant": status.restaurant_name,
                 "is_completed": status.is_completed,
                 "is_failed": status.is_failed,
+                "simulated": simulated,
             },
         )

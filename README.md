@@ -60,6 +60,7 @@ Things to know:
 | `sensor.<name>_rider_code` | Code to give to the rider |
 | `sensor.<name>_restaurant` | Restaurant name |
 | `button.<name>_refresh_now` | Check for a new order immediately |
+| `button.<name>_simulate_order` | Replay a demo order (see below) |
 
 Entity ids follow your Home Assistant language (e.g. `sensor.<name>_fase` in Italian).
 
@@ -95,7 +96,23 @@ actions:
 
 Event data: `order_id`, `state`, `step`, `step_index`, `step_count`, `message`, `advisory`, `eta`,
 `eta_status`, `estimated_delivery`, `progress`, `rider_route`, `rider_status`, `rider_code`,
-`restaurant`, `is_completed`, `is_failed`, `config_entry_id`.
+`restaurant`, `is_completed`, `is_failed`, `simulated`, `config_entry_id`.
+
+## Try it without ordering
+
+Press **Simulate order** (on the device page, under *Diagnostic*) to replay a full demo delivery
+in about two and a half minutes: the five steps, progress, arrival time, rider code and the final
+delivery. It drives the same sensors and fires the same `deliveroo_order_update` events as a real
+order, so you can build and check dashboards and notifications. Deliveroo is not contacted while
+the demo runs.
+
+Demo events carry `simulated: true`. To keep the demo out of an automation, add a condition:
+
+```yaml
+conditions:
+  - condition: template
+    value_template: "{{ not trigger.event.data.simulated }}"
+```
 
 ## How it works
 

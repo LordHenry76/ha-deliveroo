@@ -367,3 +367,34 @@ async def _user_flow() -> None:
     finally:
         await runner.cleanup()
         api.MARKETS.pop("test", None)
+
+
+def test_demo_payload_matches_the_real_document_shape() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    sim_path = API_PATH.with_name("simulation.py")
+    sim_spec = importlib.util.spec_from_file_location("deliveroo_simulation", sim_path)
+    sim = importlib.util.module_from_spec(sim_spec)
+    sys.modules["deliveroo_simulation"] = sim
+    sim_spec.loader.exec_module(sim)
+
+    start = datetime(2026, 10, 5, 13, 0, tzinfo=timezone(timedelta(hours=2)))
+    frames = [
+        api.parse_order_status("demo", sim.build_demo_payload(t, 150, lang="it", start_local=start))
+        for t in range(0, 150, 5)
+    ]
+    assert [f.step_index for f in frames[::6]] == [1, 2, 3, 4, 5]
+    progresses = [f.progress for f in frames]
+    assert progresses == sorted(progresses) and progresses[0] == 0
+    assert all(len(f.steps) == 5 and not f.is_completed for f in frames)
+    assert {f.rider_route for f in frames[:18]} == {"TO_RESTAURANT"}
+    assert {f.rider_route for f in frames[18:]} == {"TO_CUSTOMER"}
+    assert frames[0].eta == "13:02–13:12"
+    assert frames[0].estimated_delivery.isoformat() == "2026-10-05T11:02:30+00:00"
+
+    done = api.parse_order_status("demo", sim.build_demo_payload(150, 150, lang="it", start_local=start))
+    assert done.is_completed and done.state == "completed" and done.progress == 100
+    assert done.step_index is None
+
+    english = api.parse_order_status("demo", sim.build_demo_payload(100, 150, lang="xx", start_local=start))
+    assert english.step_title == "In transit" and english.advisory

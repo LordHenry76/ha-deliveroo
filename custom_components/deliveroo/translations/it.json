@@ -82,6 +82,9 @@
     "button": {
       "refresh": {
         "name": "Aggiorna ora"
+      },
+      "simulate": {
+        "name": "Simula ordine"
       }
     }
   },

@@ -417,6 +417,11 @@ class DeliverooClient:
         """Current session token (Deliveroo may rotate it)."""
         return self._token
 
+    @property
+    def language(self) -> str:
+        """Language of the configured market (used for demo texts)."""
+        return self._market["lang"]
+
     def _base_headers(self) -> dict[str, str]:
         lang = self._market["lang"]
         return {

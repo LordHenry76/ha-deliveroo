@@ -82,6 +82,9 @@
     "button": {
       "refresh": {
         "name": "Refresh now"
+      },
+      "simulate": {
+        "name": "Simulate order"
       }
     }
   },

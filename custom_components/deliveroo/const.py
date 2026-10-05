@@ -28,4 +28,8 @@ SESSION_REFRESH: Final = timedelta(hours=6)
 FALLBACK_IDLE_INTERVAL: Final = timedelta(seconds=120)
 LIGHT_API_RETRY: Final = timedelta(hours=1)
 
+# Demo order (button "Simulate order"): total length and refresh rate.
+SIMULATION_DURATION: Final = timedelta(seconds=150)
+SIMULATION_INTERVAL: Final = timedelta(seconds=5)
+
 EVENT_ORDER_UPDATE: Final = f"{DOMAIN}_order_update"
