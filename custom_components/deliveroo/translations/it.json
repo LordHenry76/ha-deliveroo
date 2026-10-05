@@ -1,0 +1,103 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Deliveroo",
+        "description": "Integrazione non ufficiale: legge lo stato degli ordini come fa il sito Deliveroo. Solo l'Italia è stata testata a fondo.",
+        "data": {
+          "market": "Paese",
+          "consumer_auth_token": "Cookie di sessione"
+        },
+        "data_description": {
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` di deliveroo.<paese> (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Sessione Deliveroo scaduta",
+        "description": "Rientra sul sito Deliveroo e incolla il nuovo cookie `consumer_auth_token`.",
+        "data": {
+          "consumer_auth_token": "Cookie di sessione"
+        },
+        "data_description": {
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` di deliveroo.<paese> (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Il cookie non è valido o è scaduto.",
+      "blocked": "La protezione anti-bot di Deliveroo ha rifiutato la richiesta. Riprova più tardi.",
+      "cannot_connect": "Impossibile connettersi a Deliveroo.",
+      "unknown": "Errore imprevisto."
+    },
+    "abort": {
+      "already_configured": "Questo account Deliveroo è già configurato.",
+      "reauth_successful": "Sessione aggiornata.",
+      "wrong_account": "Il cookie appartiene a un altro account Deliveroo."
+    }
+  },
+  "selector": {
+    "market": {
+      "options": {
+        "it": "Italia",
+        "uk": "United Kingdom",
+        "ie": "Ireland",
+        "fr": "France",
+        "be": "Belgique / België"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "order_active": {
+        "name": "Ordine attivo"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Stato ordine"
+      },
+      "message": {
+        "name": "Messaggio stato"
+      },
+      "eta": {
+        "name": "Arrivo stimato"
+      },
+      "progress": {
+        "name": "Avanzamento"
+      },
+      "rider_code": {
+        "name": "Codice rider"
+      },
+      "restaurant": {
+        "name": "Ristorante"
+      },
+      "step": {
+        "name": "Fase"
+      },
+      "estimated_delivery": {
+        "name": "Consegna prevista"
+      }
+    },
+    "button": {
+      "refresh": {
+        "name": "Aggiorna ora"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Intervalli di aggiornamento",
+        "description": "Ogni quanto Home Assistant interroga Deliveroo. Intervalli più brevi danno aggiornamenti più rapidi ma generano più richieste, con più rischio di essere limitati o bloccati.",
+        "data": {
+          "idle_interval": "Controllo di nuovi ordini ogni",
+          "active_interval": "Aggiornamento dell'ordine in corso ogni"
+        },
+        "data_description": {
+          "idle_interval": "Secondi, tra 60 e 900. Ogni controllo scarica la pagina dello storico ordini.",
+          "active_interval": "Secondi, tra 10 e 120. Il sito Deliveroo si aggiorna da solo ogni 15 secondi circa."
+        }
+      }
+    }
+  }
+}

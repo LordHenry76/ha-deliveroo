@@ -1,0 +1,14 @@
+{
+  "domain": "deliveroo",
+  "name": "Deliveroo",
+  "codeowners": [
+    "@LordHenry76"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/LordHenry76/ha-deliveroo",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/LordHenry76/ha-deliveroo/issues",
+  "requirements": [],
+  "version": "0.1.1"
+}
