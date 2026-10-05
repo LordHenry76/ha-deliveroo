@@ -246,6 +246,15 @@ def test_parse_order_list() -> None:
     assert api.parse_order_list({"orders": None}) == []
     odd = api.parse_order_list({"orders": [{"id": 1, "restaurant": "x", "consumer_status": {"a": 1}}]})
     assert odd[0].restaurant_name is None and odd[0].consumer_status_code is None
+    # real shape: string id, consumer_status as an object with a code
+    real = api.parse_order_list({"orders": [
+        {"id": "50000000931", "status": "DELIVERED", "consumer_status": {"code": "COMPLETE"},
+         "restaurant": {"id": 1, "name": "Trattoria Demo", "category": "x"}},
+        {"id": "50000000932", "status": "CONFIRMED", "consumer_status": {"code": "PROCESSING"},
+         "restaurant": {"name": "Trattoria Demo"}},
+    ]})
+    assert [o.consumer_status_code for o in real] == ["COMPLETE", "PROCESSING"]
+    assert [o.is_active for o in real] == [False, True]
 
 
 def test_active_orders_against_fake_server(socket_enabled) -> None:

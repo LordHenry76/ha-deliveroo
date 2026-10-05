@@ -325,7 +325,10 @@ def parse_order_list(payload: Any) -> list[DeliverooOrder]:
         restaurant = item.get("restaurant")
         name = restaurant.get("name") if isinstance(restaurant, dict) else None
         status = item.get("status")
+        # The API returns {"code": "..."}; the web page a plain string.
         consumer_status = item.get("consumer_status")
+        if isinstance(consumer_status, dict):
+            consumer_status = consumer_status.get("code")
         orders.append(
             DeliverooOrder(
                 id=str(item["id"]),
