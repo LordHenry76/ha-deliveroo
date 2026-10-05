@@ -224,3 +224,68 @@ def test_parse_status_tolerates_missing_or_bad_fields() -> None:
     bad = api.parse_order_status("1", {"data": {"attributes": {
         "analytics": {"estimated_delivery_time": "not-a-date"}}}})
     assert bad.estimated_delivery is None
+
+
+def test_parse_order_list() -> None:
+    assert api.parse_order_list({"orders": [], "count": 0}) == []
+    orders = api.parse_order_list({
+        "count": 1,
+        "orders": [
+            {"id": 50000000931, "status": "CONFIRMED", "consumer_status": "PROCESSING",
+             "restaurant": {"name": " Trattoria Demo "}, "order_number": "0931"},
+            {"status": "no id, skipped"},
+            "garbage",
+        ],
+    })
+    assert len(orders) == 1
+    assert orders[0].id == "50000000931"
+    assert orders[0].restaurant_name == "Trattoria Demo"
+    assert orders[0].consumer_status_code == "PROCESSING"
+    # unexpected shapes never raise
+    assert api.parse_order_list(None) == []
+    assert api.parse_order_list({"orders": None}) == []
+    odd = api.parse_order_list({"orders": [{"id": 1, "restaurant": "x", "consumer_status": {"a": 1}}]})
+    assert odd[0].restaurant_name is None and odd[0].consumer_status_code is None
+
+
+def test_active_orders_against_fake_server(socket_enabled) -> None:
+    asyncio.run(_active_orders_flow())
+
+
+async def _active_orders_flow() -> None:
+    seen: dict = {}
+
+    async def orders(request: web.Request) -> web.Response:
+        seen["headers"] = dict(request.headers)
+        seen["query"] = dict(request.query)
+        auth = request.headers.get("Authorization", "")
+        if auth == "Bearer GOOD":
+            return web.json_response({"orders": [{"id": 7, "restaurant": {"name": "Demo"}}], "count": 1})
+        if auth == "Bearer LIMITED":
+            return web.Response(status=429)
+        return web.Response(status=401)
+
+    app = web.Application()
+    app.router.add_get("/consumer/order-history/v1/orders", orders)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    api.MARKETS["test"] = {"web": base, "api": base, "lang": "it"}
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+            client = api.DeliverooClient(session, "test", "COOKIE", "Europe/Rome")
+            result = await client.async_get_active_orders("GOOD")
+            assert [o.id for o in result] == ["7"]
+            assert seen["query"] == {"state": "active"}
+            assert seen["headers"]["X-Roo-RequestSource"] == "orders"
+            assert "Cookie" not in seen["headers"]  # the session cookie never goes to the API host
+            with pytest.raises(api.DeliverooAuthError):
+                await client.async_get_active_orders("EXPIRED")
+            with pytest.raises(api.DeliverooBlockedError):
+                await client.async_get_active_orders("LIMITED")
+    finally:
+        await runner.cleanup()
+        api.MARKETS.pop("test", None)

@@ -6,6 +6,9 @@ deliveroo.<tld> website itself uses:
 * ``GET https://deliveroo.<tld>/<lang>/orders`` rendered server side (Next.js).
   With the long-lived ``consumer_auth_token`` cookie it returns the order
   history and a short-lived Bearer JWT embedded in ``__NEXT_DATA__``.
+* ``GET https://api.<market>.deliveroo.com/consumer/order-history/v1/orders?state=active``
+  which returns only the orders in progress (a few bytes when there are none),
+  authenticated with the Bearer JWT. This is what makes frequent idle checks cheap.
 * ``GET https://api.<market>.deliveroo.com/consumer/v2-6/consumer_order_statuses/<id>``
   which returns the live tracking data (JSON:API), authenticated either with the
   Bearer JWT or with the order's public ``sharing_token``.
@@ -35,6 +38,7 @@ USER_AGENT = (
 )
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 STATUS_PATH = "/consumer/v2-6/consumer_order_statuses/{order_id}"
+ORDER_HISTORY_PATH = "/consumer/order-history/v1/orders"
 
 # Only "it" has been verified end to end. The others follow the same pattern
 # (web domain + api.<market>.deliveroo.com) and are considered experimental.
@@ -250,6 +254,33 @@ def parse_orders_page(html: str) -> DeliverooAccount:
     )
 
 
+def parse_order_list(payload: Any) -> list[DeliverooOrder]:
+    """Parse an order-history document ({"orders": [...], "count": n})."""
+    items = payload.get("orders") if isinstance(payload, dict) else None
+    orders: list[DeliverooOrder] = []
+    for item in items or []:
+        if not isinstance(item, dict) or item.get("id") is None:
+            continue
+        restaurant = item.get("restaurant")
+        name = restaurant.get("name") if isinstance(restaurant, dict) else None
+        status = item.get("status")
+        consumer_status = item.get("consumer_status")
+        orders.append(
+            DeliverooOrder(
+                id=str(item["id"]),
+                status=status if isinstance(status, str) else None,
+                consumer_status_code=consumer_status
+                if isinstance(consumer_status, str)
+                else None,
+                status_text=None,
+                restaurant_name=(name or "").strip() or None
+                if isinstance(name, str)
+                else None,
+            )
+        )
+    return orders
+
+
 def parse_order_status(order_id: str, payload: dict[str, Any]) -> DeliverooOrderStatus:
     """Parse a consumer_order_statuses JSON:API document."""
     data = payload.get("data") or {}
@@ -358,6 +389,41 @@ class DeliverooClient:
         if status != 200:
             raise DeliverooError(f"HTTP {status} on orders page")
         return parse_orders_page(body)
+
+    async def async_get_active_orders(self, bearer: str) -> list[DeliverooOrder]:
+        """Fetch only the orders in progress (tiny response when there are none)."""
+        headers = {
+            **self._base_headers(),
+            "Accept": "application/json, application/vnd.api+json",
+            "Authorization": f"Bearer {bearer}",
+            "Origin": self._market["web"],
+            "Referer": f"{self._market['web']}/",
+            "X-Roo-RequestSource": "orders",
+        }
+        url = self._market["api"] + ORDER_HISTORY_PATH
+        try:
+            async with self._session.get(
+                url,
+                headers=headers,
+                params={"state": "active"},
+                timeout=REQUEST_TIMEOUT,
+            ) as resp:
+                body = await resp.text()
+                status = resp.status
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise DeliverooConnectionError(str(err)) from err
+
+        if status == 401:
+            raise DeliverooAuthError("HTTP 401 on active orders")
+        if status in (403, 429, 503):
+            raise DeliverooBlockedError(f"HTTP {status} on active orders")
+        if status != 200:
+            raise DeliverooError(f"HTTP {status} on active orders")
+        try:
+            payload = json.loads(body)
+        except ValueError as err:
+            raise DeliverooError("Invalid active orders JSON") from err
+        return parse_order_list(payload)
 
     async def async_get_order_status(
         self,

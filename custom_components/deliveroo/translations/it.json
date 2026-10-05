@@ -88,13 +88,13 @@
     "step": {
       "init": {
         "title": "Intervalli di aggiornamento",
-        "description": "Ogni quanto Home Assistant interroga Deliveroo. Intervalli più brevi danno aggiornamenti più rapidi ma generano più richieste, con più rischio di essere limitati o bloccati.",
+        "description": "Ogni quanto Home Assistant interroga Deliveroo. Il controllo di nuovi ordini è una richiesta minima (pochi byte), quindi può essere frequente.",
         "data": {
           "idle_interval": "Controllo di nuovi ordini ogni",
           "active_interval": "Aggiornamento dell'ordine in corso ogni"
         },
         "data_description": {
-          "idle_interval": "Secondi, tra 60 e 900. Ogni controllo scarica la pagina dello storico ordini.",
+          "idle_interval": "Secondi, tra 15 e 900.",
           "active_interval": "Secondi, tra 10 e 120. Il sito Deliveroo si aggiorna da solo ogni 15 secondi circa."
         }
       }

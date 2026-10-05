@@ -62,12 +62,11 @@ Entity ids follow your Home Assistant language (e.g. `sensor.<name>_fase` in Ita
 
 | Option | Default | Range |
 |---|---|---|
-| Check for new orders every | 120 s | 60–900 s |
+| Check for new orders every | 30 s | 15–900 s |
 | Update an active order every | 20 s | 10–120 s |
 
-Each idle check downloads your order history page, so shorter intervals mean more traffic and a
-higher chance of being rate-limited by Deliveroo's bot protection. If you see errors in the log,
-increase the idle interval.
+Checking for new orders is a tiny API request (a few dozen bytes when there is no order),
+so a short interval is fine. If you ever see rate-limit errors in the log, increase it.
 
 ## Event
 
@@ -93,11 +92,16 @@ Event data: `order_id`, `state`, `step`, `step_index`, `step_count`, `message`, 
 
 ## How it works
 
-* Every 2 minutes (configurable) it reads your order history (server-rendered page) with the session cookie.
-  The same page provides a short-lived API token.
-* While an order is active it polls the order tracking endpoint every 20 seconds (configurable) and goes back
-  to the slow interval as soon as the order is delivered or cancelled.
-* If Deliveroo rotates the session cookie, the new value is saved automatically.
+* **Idle:** every 30 seconds (configurable) it asks Deliveroo's API for your orders in progress.
+  The answer is a few dozen bytes when there are none.
+* **During an order:** it polls the order tracking endpoint every 20 seconds (configurable) and
+  goes back to idle as soon as the order is delivered or cancelled.
+* **Session:** the order history web page is read only at start-up, every 6 hours and when the
+  API rejects the token. It provides the short-lived API token and validates the session cookie.
+  If Deliveroo rotates the cookie, the new value is saved automatically.
+* **Fallback:** if the lightweight API is unavailable (for example in an untested country), the
+  integration detects orders from the web page instead, at most every 2 minutes, and retries the
+  API after an hour.
 
 ## Diagnostics
 

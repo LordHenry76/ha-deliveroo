@@ -16,11 +16,12 @@ from .api import (
     DeliverooAccount,
     DeliverooAuthError,
     DeliverooClient,
+    DeliverooConnectionError,
     DeliverooError,
+    DeliverooOrder,
     DeliverooOrderStatus,
 )
 from .const import (
-    ACCOUNT_REFRESH,
     CONF_ACTIVE_INTERVAL,
     CONF_IDLE_INTERVAL,
     CONF_TOKEN,
@@ -28,6 +29,9 @@ from .const import (
     DEFAULT_IDLE_INTERVAL,
     DOMAIN,
     EVENT_ORDER_UPDATE,
+    FALLBACK_IDLE_INTERVAL,
+    LIGHT_API_RETRY,
+    SESSION_REFRESH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,7 +50,12 @@ type DeliverooConfigEntry = ConfigEntry[DeliverooCoordinator]
 
 
 class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
-    """Two-speed poller: order history while idle, live status during an order."""
+    """Polls Deliveroo at two speeds.
+
+    Idle: a tiny "active orders" API call. During an order: the live status
+    endpoint. The heavy server-rendered orders page is only read at start-up,
+    every few hours, and when the API rejects the Bearer token.
+    """
 
     config_entry: DeliverooConfigEntry
 
@@ -77,23 +86,34 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
         self._sharing_tokens: dict[str, str] = {}
         self._finished: set[str] = set()
         self._last_signature: tuple | None = None
+        self._light_api_disabled_until: datetime | None = None
+
+    @property
+    def light_api_enabled(self) -> bool:
+        """Return True if idle checks use the lightweight active-orders API."""
+        until = self._light_api_disabled_until
+        return until is None or dt_util.utcnow() >= until
 
     async def async_force_refresh(self) -> None:
-        """Re-read the order history now (used by the refresh button)."""
-        self._account_fetched = None
+        """Check for a new order now (used by the refresh button)."""
         await self.async_refresh()
 
-    def _account_is_stale(self) -> bool:
-        now = dt_util.utcnow()
+    def _account_age(self) -> timedelta | None:
         if self._account is None or self._account_fetched is None:
+            return None
+        return dt_util.utcnow() - self._account_fetched
+
+    def _account_is_stale(self) -> bool:
+        age = self._account_age()
+        if age is None:
             return True
-        if self._active_id is None:
-            # Idle: every tick is an account refresh (the interval is already slow).
+        if self._active_id is None and not self.light_api_enabled:
+            # Fallback mode: the orders page is the only way to spot a new order.
             return True
         # The Bearer's "exp" is deliberately ignored: the website keeps serving the
         # same token after it expires and the API still accepts it. The token is
-        # refreshed only when the API answers 401 (see _async_fetch_status).
-        return now - self._account_fetched >= ACCOUNT_REFRESH
+        # refreshed only when the API answers 401.
+        return age >= SESSION_REFRESH
 
     async def _async_refresh_account(self) -> None:
         try:
@@ -113,7 +133,47 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
                 entry, data={**entry.data, CONF_TOKEN: self.client.token}
             )
 
-        active = [o for o in account.active_orders if o.id not in self._finished]
+    async def _async_list_active(self) -> list[DeliverooOrder]:
+        """Active orders from the lightweight API, refreshing the Bearer on 401."""
+        assert self._account is not None
+        try:
+            return await self.client.async_get_active_orders(self._account.bearer)
+        except DeliverooAuthError:
+            _LOGGER.debug("Bearer rejected by the active-orders API")
+
+        previous = self._account.bearer
+        await self._async_refresh_account()
+        if self._account.bearer == previous:
+            raise DeliverooAuthError("Bearer rejected and no fresh token available")
+        return await self.client.async_get_active_orders(self._account.bearer)
+
+    async def _async_detect_active(self) -> None:
+        """Find out whether an order is in progress."""
+        assert self._account is not None
+        orders: list[DeliverooOrder]
+        if self.light_api_enabled:
+            try:
+                orders = await self._async_list_active()
+            except DeliverooConnectionError as err:
+                raise UpdateFailed(f"Deliveroo active orders: {err}") from err
+            except DeliverooError as err:
+                # Endpoint missing in this market, rate limited, or Bearer unusable:
+                # fall back to the orders page for a while.
+                _LOGGER.warning(
+                    "Deliveroo active-orders API unavailable (%s); "
+                    "falling back to the orders page for %s",
+                    err,
+                    LIGHT_API_RETRY,
+                )
+                self._light_api_disabled_until = dt_util.utcnow() + LIGHT_API_RETRY
+                age = self._account_age()
+                if age is None or age > timedelta(seconds=60):
+                    await self._async_refresh_account()
+                orders = self._account.active_orders
+        else:
+            orders = self._account.active_orders
+
+        active = [o for o in orders if o.id not in self._finished]
         self._active_id = active[0].id if active else None
 
     async def _async_fetch_status(self, order_id: str) -> DeliverooOrderStatus:
@@ -147,6 +207,9 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
             await self._async_refresh_account()
         assert self._account is not None
 
+        if self._active_id is None:
+            await self._async_detect_active()
+
         status: DeliverooOrderStatus | None = None
         if self._active_id is not None:
             order_id = self._active_id
@@ -164,9 +227,12 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
 
             self._fire_event_if_changed(status)
 
-        self.update_interval = (
-            self.active_interval if self._active_id else self.idle_interval
-        )
+        if self._active_id is not None:
+            self.update_interval = self.active_interval
+        elif self.light_api_enabled:
+            self.update_interval = self.idle_interval
+        else:
+            self.update_interval = max(self.idle_interval, FALLBACK_IDLE_INTERVAL)
 
         return DeliverooData(
             account_name=self._account.name,

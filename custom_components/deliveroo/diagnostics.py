@@ -35,6 +35,7 @@ async def async_get_config_entry_diagnostics(
     return {
         "entry": async_redact_data(dict(entry.data), TO_REDACT),
         "active_order_id": data.active_order_id if data else None,
+        "light_api": entry.runtime_data.light_api_enabled,
         "status": None
         if status is None
         else {

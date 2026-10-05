@@ -88,13 +88,13 @@
     "step": {
       "init": {
         "title": "Polling intervals",
-        "description": "How often Home Assistant checks Deliveroo. Shorter intervals mean faster updates but more requests, and a higher chance of being rate-limited or blocked.",
+        "description": "How often Home Assistant checks Deliveroo. Checking for new orders is a tiny request (a few bytes), so it can be frequent.",
         "data": {
           "idle_interval": "Check for new orders every",
           "active_interval": "Update an active order every"
         },
         "data_description": {
-          "idle_interval": "Seconds, between 60 and 900. Each check downloads your order history page.",
+          "idle_interval": "Seconds, between 15 and 900.",
           "active_interval": "Seconds, between 10 and 120. The Deliveroo website itself refreshes about every 15 seconds."
         }
       }

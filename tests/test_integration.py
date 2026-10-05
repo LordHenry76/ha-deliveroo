@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -19,6 +21,8 @@ from custom_components.deliveroo.api import (
     DeliverooAccount,
     DeliverooAuthError,
     DeliverooBlockedError,
+    DeliverooConnectionError,
+    DeliverooError,
     DeliverooOrder,
     DeliverooOrderStatus,
     DeliverooStep,
@@ -32,11 +36,15 @@ from custom_components.deliveroo.const import (
     DEFAULT_IDLE_INTERVAL,
     DOMAIN,
     EVENT_ORDER_UPDATE,
+    FALLBACK_IDLE_INTERVAL,
+    SESSION_REFRESH,
 )
 
 CLIENT = "custom_components.deliveroo.api.DeliverooClient"
 ACTIVE_INTERVAL = timedelta(seconds=DEFAULT_ACTIVE_INTERVAL)
 IDLE_INTERVAL = timedelta(seconds=DEFAULT_IDLE_INTERVAL)
+
+ACTIVE_ORDER = DeliverooOrder("222", "CONFIRMED", "PROCESSING", None, "Trattoria Demo")
 
 
 def account(active: bool = True) -> DeliverooAccount:
@@ -75,6 +83,47 @@ def status(**kw) -> DeliverooOrderStatus:
     return DeliverooOrderStatus(**base)
 
 
+@pytest.fixture
+def api():
+    """Patch the three client calls for the whole test.
+
+    Defaults: logged-in account, one active order, status "processing".
+    """
+    mocks = SimpleNamespace(
+        account=AsyncMock(return_value=account()),
+        active=AsyncMock(return_value=[ACTIVE_ORDER]),
+        status=AsyncMock(return_value=status()),
+    )
+    with (
+        patch(f"{CLIENT}.async_get_account", mocks.account),
+        patch(f"{CLIENT}.async_get_active_orders", mocks.active),
+        patch(f"{CLIENT}.async_get_order_status", mocks.status),
+    ):
+        yield mocks
+
+
+async def setup_entry(hass: HomeAssistant, **kw) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="it_123",
+        title="Deliveroo",
+        data={CONF_MARKET: "it", CONF_TOKEN: "COOKIE"},
+        **kw,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
+
+
+async def tick(hass: HomeAssistant, after: timedelta) -> None:
+    async_fire_time_changed(hass, dt_util.utcnow() + after)
+    await hass.async_block_till_done()
+
+
+# ── Config flow ──────────────────────────────────────────────────────────────
+
+
 async def test_user_flow_success(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -107,77 +156,6 @@ async def test_user_flow_errors(hass: HomeAssistant) -> None:
         assert result["errors"] == {"base": err}
 
 
-async def test_order_lifecycle(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(
-        domain=DOMAIN, unique_id="it_123", title="Deliveroo (Alex)",
-        data={CONF_MARKET: "it", CONF_TOKEN: "COOKIE"},
-    )
-    entry.add_to_hass(hass)
-    events = async_capture_events(hass, EVENT_ORDER_UPDATE)
-
-    get_account = AsyncMock(return_value=account())
-    get_status = AsyncMock(return_value=status())
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-        coordinator = entry.runtime_data
-        assert coordinator.update_interval == ACTIVE_INTERVAL
-        assert hass.states.get("binary_sensor.deliveroo_alex_active_order").state == "on"
-        st = hass.states.get("sensor.deliveroo_alex_order_status")
-        assert st.state == "processing"
-        assert st.attributes["order_id"] == "222"
-        assert hass.states.get("sensor.deliveroo_alex_estimated_arrival").state == "20:20–20:50"
-        assert hass.states.get("sensor.deliveroo_alex_rider_code").state == "78"
-        assert len(events) == 1
-
-        # Same status again: no new event
-        async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL)
-        await hass.async_block_till_done()
-        assert len(events) == 1
-
-        # Rider on the way
-        get_status.return_value = status(ui_status="IN_TRANSIT", message="Il rider sta arrivando",
-                                         rider_route="TO_CUSTOMER", progress=80)
-        async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL * 2)
-        await hass.async_block_till_done()
-        assert len(events) == 2
-        assert events[-1].data["rider_route"] == "TO_CUSTOMER"
-
-        # Delivered: order finished, back to slow polling
-        get_status.return_value = status(ui_status="COMPLETED", message="Consegnato", is_completed=True)
-        async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL * 3)
-        await hass.async_block_till_done()
-        assert events[-1].data["is_completed"] is True
-        assert coordinator.update_interval == IDLE_INTERVAL
-        assert hass.states.get("binary_sensor.deliveroo_alex_active_order").state == "off"
-        assert hass.states.get("sensor.deliveroo_alex_order_status").state == "completed"
-
-        # Next idle tick: history still says PROCESSING for a while, must not re-poll it
-        calls = get_status.await_count
-        async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL * 3 + IDLE_INTERVAL)
-        await hass.async_block_till_done()
-        assert get_status.await_count == calls
-        assert hass.states.get("sensor.deliveroo_alex_order_status").state == "idle"
-
-
-async def test_rotated_cookie_is_persisted(hass: HomeAssistant) -> None:
-    entry = MockConfigEntry(domain=DOMAIN, unique_id="it_123", data={CONF_MARKET: "it", CONF_TOKEN: "OLD"})
-    entry.add_to_hass(hass)
-
-    async def fake_get_account(self):
-        self._token = "NEW"
-        return account(active=False)
-
-    with patch(f"{CLIENT}.async_get_account", fake_get_account):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-    assert entry.data[CONF_TOKEN] == "NEW"
-
-
 async def test_expired_session_starts_reauth(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(domain=DOMAIN, unique_id="it_123", data={CONF_MARKET: "it", CONF_TOKEN: "OLD"})
     entry.add_to_hass(hass)
@@ -201,74 +179,199 @@ async def test_expired_session_starts_reauth(hass: HomeAssistant) -> None:
     assert entry.data[CONF_TOKEN] == "FRESH"
 
 
-async def _setup_active(hass: HomeAssistant, get_account, get_status) -> MockConfigEntry:
-    entry = MockConfigEntry(domain=DOMAIN, unique_id="it_123", title="Deliveroo", data={CONF_MARKET: "it", CONF_TOKEN: "C"})
-    entry.add_to_hass(hass)
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        assert await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-    return entry
+# ── Idle polling: the lightweight API ────────────────────────────────────────
 
 
-async def test_expired_bearer_does_not_refetch_page_every_minute(hass: HomeAssistant) -> None:
+async def test_idle_uses_light_api_not_the_page(hass: HomeAssistant, api) -> None:
+    """While idle, every tick is one tiny API call; the page is read once."""
+    api.active.return_value = []
+    entry = await setup_entry(hass)
+    assert entry.runtime_data.update_interval == IDLE_INTERVAL == timedelta(seconds=30)
+    assert hass.states.get("sensor.deliveroo_order_status").state == "idle"
+
+    for i in range(1, 6):
+        await tick(hass, IDLE_INTERVAL * i)
+    assert api.account.await_count == 1
+    assert api.active.await_count == 6
+    assert api.status.await_count == 0
+    api.active.assert_awaited_with("eyJ.eyJ.sig")
+
+
+async def test_new_order_detected_on_next_idle_tick(hass: HomeAssistant, api) -> None:
+    api.active.return_value = []
+    entry = await setup_entry(hass)
+    assert hass.states.get("binary_sensor.deliveroo_active_order").state == "off"
+
+    api.active.return_value = [ACTIVE_ORDER]  # order placed from the phone
+    await tick(hass, IDLE_INTERVAL)
+    assert hass.states.get("binary_sensor.deliveroo_active_order").state == "on"
+    assert hass.states.get("sensor.deliveroo_order_status").state == "processing"
+    assert entry.runtime_data.update_interval == ACTIVE_INTERVAL
+    assert api.account.await_count == 1  # still no extra page download
+
+
+async def test_session_page_is_refreshed_every_few_hours(hass: HomeAssistant, api, freezer) -> None:
+    api.active.return_value = []
+    await setup_entry(hass)
+    assert api.account.await_count == 1
+
+    # Shortly after: still the cached session
+    freezer.tick(IDLE_INTERVAL)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert api.account.await_count == 1
+
+    # Hours later: the page is read again to validate the session
+    freezer.tick(SESSION_REFRESH)
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert api.account.await_count == 2
+
+
+async def test_light_api_401_refreshes_bearer_and_retries(hass: HomeAssistant, api) -> None:
+    fresh = account()
+    fresh.bearer = "eyJ.eyJfresh.sig"
+    api.account.side_effect = [account(), fresh]
+
+    async def by_bearer(bearer):
+        if bearer != fresh.bearer:
+            raise DeliverooAuthError()
+        return []
+
+    api.active.side_effect = by_bearer
+    entry = await setup_entry(hass)
+    assert entry.runtime_data.last_update_success
+    assert entry.runtime_data.light_api_enabled
+    assert api.account.await_count == 2
+
+
+async def test_light_api_unavailable_falls_back_to_page(hass: HomeAssistant, api) -> None:
+    """Other markets may not have the endpoint: detection must still work."""
+    api.active.side_effect = DeliverooError("HTTP 404 on active orders")
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data
+    assert coordinator.last_update_success
+    assert not coordinator.light_api_enabled
+    # the page (which lists order 222 as active) was used instead
+    assert hass.states.get("binary_sensor.deliveroo_active_order").state == "on"
+
+    # once idle again, the page is never polled faster than the fallback interval
+    api.status.return_value = status(is_completed=True)
+    await tick(hass, ACTIVE_INTERVAL)
+    assert coordinator.update_interval == FALLBACK_IDLE_INTERVAL
+
+
+async def test_light_api_network_error_is_a_failed_update(hass: HomeAssistant, api) -> None:
+    api.active.return_value = []
+    entry = await setup_entry(hass)
+    api.active.side_effect = DeliverooConnectionError("timeout")
+    await tick(hass, IDLE_INTERVAL)
+    assert not entry.runtime_data.last_update_success
+    assert entry.runtime_data.light_api_enabled  # a network blip is not a fallback
+
+
+# ── Order lifecycle ──────────────────────────────────────────────────────────
+
+
+async def test_order_lifecycle(hass: HomeAssistant, api) -> None:
+    events = async_capture_events(hass, EVENT_ORDER_UPDATE)
+    entry = await setup_entry(hass)
+    coordinator = entry.runtime_data
+
+    assert coordinator.update_interval == ACTIVE_INTERVAL
+    assert hass.states.get("binary_sensor.deliveroo_active_order").state == "on"
+    st = hass.states.get("sensor.deliveroo_order_status")
+    assert st.state == "processing"
+    assert st.attributes["order_id"] == "222"
+    assert hass.states.get("sensor.deliveroo_estimated_arrival").state == "20:20–20:50"
+    assert hass.states.get("sensor.deliveroo_rider_code").state == "78"
+    assert len(events) == 1
+
+    # Same status again: no new event, and no order-list call while active
+    listed = api.active.await_count
+    await tick(hass, ACTIVE_INTERVAL)
+    assert len(events) == 1
+    assert api.active.await_count == listed
+
+    # Rider on the way
+    api.status.return_value = status(message="Il tuo ordine è stato ritirato", rider_route="TO_CUSTOMER", progress=70)
+    await tick(hass, ACTIVE_INTERVAL * 2)
+    assert len(events) == 2
+    assert events[-1].data["rider_route"] == "TO_CUSTOMER"
+
+    # Delivered: order finished, back to idle polling
+    api.status.return_value = status(message="Consegnato", is_completed=True)
+    await tick(hass, ACTIVE_INTERVAL * 3)
+    assert events[-1].data["is_completed"] is True
+    assert coordinator.update_interval == IDLE_INTERVAL
+    assert hass.states.get("binary_sensor.deliveroo_active_order").state == "off"
+    assert hass.states.get("sensor.deliveroo_order_status").state == "completed"
+
+    # Next idle tick: the API may still list the order for a while, must not re-poll it
+    calls = api.status.await_count
+    await tick(hass, ACTIVE_INTERVAL * 3 + IDLE_INTERVAL)
+    assert api.status.await_count == calls
+    assert hass.states.get("sensor.deliveroo_order_status").state == "idle"
+    assert api.account.await_count == 1
+
+
+async def test_rotated_cookie_is_persisted(hass: HomeAssistant, api) -> None:
+    api.active.return_value = []
+
+    async def fake_get_account(self):
+        self._token = "NEW"
+        return account(active=False)
+
+    with patch(f"{CLIENT}.async_get_account", fake_get_account):
+        entry = await setup_entry(hass)
+    assert entry.data[CONF_TOKEN] == "NEW"
+
+
+async def test_expired_bearer_is_still_used(hass: HomeAssistant, api) -> None:
     """Deliveroo keeps serving an expired Bearer that the API still accepts."""
     expired = account()
     expired.bearer_expires = dt_util.utcnow().timestamp() - 600
-    get_account = AsyncMock(return_value=expired)
-    get_status = AsyncMock(return_value=status())
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        await _setup_active(hass, get_account, get_status)
-        for i in range(1, 4):
-            async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL * i)
-            await hass.async_block_till_done()
-    assert get_account.await_count == 1
-    assert get_status.await_count == 4
+    api.account.return_value = expired
+    await setup_entry(hass)
+    for i in range(1, 4):
+        await tick(hass, ACTIVE_INTERVAL * i)
+    assert api.account.await_count == 1
+    assert api.status.await_count == 4
 
 
-async def test_401_falls_back_to_sharing_token(hass: HomeAssistant) -> None:
-    get_account = AsyncMock(return_value=account())
-    get_status = AsyncMock(return_value=status())
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        entry = await _setup_active(hass, get_account, get_status)
+async def test_status_401_falls_back_to_sharing_token(hass: HomeAssistant, api) -> None:
+    entry = await setup_entry(hass)
 
-        async def by_kind(order_id, *, bearer=None, sharing_token=None):
-            if bearer:
-                raise DeliverooAuthError()
-            assert sharing_token == "SHARE"
-            return status(message="via sharing token")
+    async def by_kind(order_id, *, bearer=None, sharing_token=None):
+        if bearer:
+            raise DeliverooAuthError()
+        assert sharing_token == "SHARE"
+        return status(message="via sharing token")
 
-        get_status.side_effect = by_kind
-        async_fire_time_changed(hass, dt_util.utcnow() + ACTIVE_INTERVAL)
-        await hass.async_block_till_done()
+    api.status.side_effect = by_kind
+    await tick(hass, ACTIVE_INTERVAL)
     assert entry.runtime_data.last_update_success
     assert hass.states.get("sensor.deliveroo_status_message").state == "via sharing token"
 
 
-async def test_401_without_sharing_token_retries_with_fresh_bearer(hass: HomeAssistant) -> None:
+async def test_status_401_without_sharing_token_retries_with_fresh_bearer(hass: HomeAssistant, api) -> None:
     fresh = account()
     fresh.bearer = "eyJ.eyJfresh.sig"
-    get_account = AsyncMock(side_effect=[account(), fresh])
+    api.account.side_effect = [account(), fresh]
 
     async def by_bearer(order_id, *, bearer=None, sharing_token=None):
         if bearer != fresh.bearer:
             raise DeliverooAuthError()
         return status(sharing_token=None)
 
-    get_status = AsyncMock(side_effect=by_bearer)
-    entry = await _setup_active(hass, get_account, get_status)
+    api.status.side_effect = by_bearer
+    entry = await setup_entry(hass)
     assert entry.runtime_data.last_update_success
-    assert get_account.await_count == 2
+    assert api.account.await_count == 2
     assert hass.states.get("sensor.deliveroo_order_status").state == "processing"
 
+
+# ── Sensors, options, button, diagnostics ────────────────────────────────────
 
 STEPS = [
     DeliverooStep("Ordine inviato", 10, False),
@@ -279,23 +382,19 @@ STEPS = [
 ]
 
 
-async def test_step_delivery_time_and_advisory(hass: HomeAssistant) -> None:
+async def test_step_delivery_time_and_advisory(hass: HomeAssistant, api) -> None:
     """Values modelled on a real order with the rider on the way."""
-    eta = datetime(2026, 10, 4, 18, 3, 18, tzinfo=UTC)
-    get_account = AsyncMock(return_value=account())
-    get_status = AsyncMock(
-        return_value=status(
-            message="Il tuo ordine è stato ritirato",
-            rider_route="TO_CUSTOMER",
-            progress=70,
-            steps=STEPS,
-            estimated_delivery=eta,
-            advisory="Il rider ha un altro ordine da consegnare.",
-            rider_status="en-route",
-        )
+    api.status.return_value = status(
+        message="Il tuo ordine è stato ritirato",
+        rider_route="TO_CUSTOMER",
+        progress=70,
+        steps=STEPS,
+        estimated_delivery=datetime(2026, 10, 4, 18, 3, 18, tzinfo=UTC),
+        advisory="Il rider ha un altro ordine da consegnare.",
+        rider_status="en-route",
     )
     events = async_capture_events(hass, EVENT_ORDER_UPDATE)
-    await _setup_active(hass, get_account, get_status)
+    await setup_entry(hass)
 
     step = hass.states.get("sensor.deliveroo_step")
     assert step.state == "In transito"
@@ -311,49 +410,39 @@ async def test_step_delivery_time_and_advisory(hass: HomeAssistant) -> None:
     assert events[0].data["estimated_delivery"] == "2026-10-04T18:03:18+00:00"
 
 
-async def test_default_and_custom_intervals(hass: HomeAssistant) -> None:
-    get_account = AsyncMock(return_value=account(active=False))
-    get_status = AsyncMock(return_value=status())
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        entry = await _setup_active(hass, get_account, get_status)
-        assert entry.runtime_data.update_interval == timedelta(seconds=120)
+async def test_options_flow_changes_intervals(hass: HomeAssistant, api) -> None:
+    api.active.return_value = []
+    entry = await setup_entry(hass)
+    assert entry.runtime_data.update_interval == timedelta(seconds=30)
 
-        # Options flow changes the intervals and reloads the entry
-        result = await hass.config_entries.options.async_init(entry.entry_id)
-        assert result["type"] is FlowResultType.FORM
-        result = await hass.config_entries.options.async_configure(
-            result["flow_id"], {CONF_IDLE_INTERVAL: 300, CONF_ACTIVE_INTERVAL: 15}
-        )
-        assert result["type"] is FlowResultType.CREATE_ENTRY
-        await hass.async_block_till_done()
-        assert entry.options == {CONF_IDLE_INTERVAL: 300, CONF_ACTIVE_INTERVAL: 15}
-        assert entry.runtime_data.update_interval == timedelta(seconds=300)
-        assert entry.runtime_data.active_interval == timedelta(seconds=15)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_IDLE_INTERVAL: 300, CONF_ACTIVE_INTERVAL: 15}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    assert entry.options == {CONF_IDLE_INTERVAL: 300, CONF_ACTIVE_INTERVAL: 15}
+    assert entry.runtime_data.update_interval == timedelta(seconds=300)
+    assert entry.runtime_data.active_interval == timedelta(seconds=15)
 
 
-async def test_refresh_button_detects_new_order_immediately(hass: HomeAssistant) -> None:
-    get_account = AsyncMock(return_value=account(active=False))
-    get_status = AsyncMock(return_value=status())
-    with (
-        patch(f"{CLIENT}.async_get_account", get_account),
-        patch(f"{CLIENT}.async_get_order_status", get_status),
-    ):
-        await _setup_active(hass, get_account, get_status)
-        assert hass.states.get("sensor.deliveroo_order_status").state == "idle"
+async def test_refresh_button_detects_new_order_immediately(hass: HomeAssistant, api) -> None:
+    api.active.return_value = []
+    await setup_entry(hass)
+    assert hass.states.get("sensor.deliveroo_order_status").state == "idle"
 
-        get_account.return_value = account()  # an order was just placed
-        await hass.services.async_call(
-            "button", "press", {"entity_id": "button.deliveroo_refresh_now"}, blocking=True
-        )
-        await hass.async_block_till_done()
+    api.active.return_value = [ACTIVE_ORDER]  # an order was just placed
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.deliveroo_refresh_now"}, blocking=True
+    )
+    await hass.async_block_till_done()
     assert hass.states.get("sensor.deliveroo_order_status").state == "processing"
     assert hass.states.get("binary_sensor.deliveroo_active_order").state == "on"
+    assert api.account.await_count == 1
 
 
-async def test_diagnostics_redacts_third_party_data(hass: HomeAssistant) -> None:
+async def test_diagnostics_redacts_third_party_data(hass: HomeAssistant, api) -> None:
     from custom_components.deliveroo.diagnostics import (
         async_get_config_entry_diagnostics,
     )
@@ -365,14 +454,14 @@ async def test_diagnostics_redacts_third_party_data(hass: HomeAssistant) -> None
         "message": "Il tuo ordine è stato ritirato",
         "analytics": {"delivery_drn_id": "abc", "rider_status": "en-route"},
     }
-    get_account = AsyncMock(return_value=account())
-    get_status = AsyncMock(return_value=status(steps=STEPS, raw_attributes=raw, advisory=raw["advisory"]))
-    entry = await _setup_active(hass, get_account, get_status)
+    api.status.return_value = status(steps=STEPS, raw_attributes=raw, advisory=raw["advisory"])
+    entry = await setup_entry(hass)
     diag = await async_get_config_entry_diagnostics(hass, entry)
     dumped = str(diag)
     assert "Mario Rossi" not in dumped
     assert "+390000000" not in dumped
     assert "abc" not in dumped.replace("active", "")
     assert diag["entry"][CONF_TOKEN] == "**REDACTED**"
+    assert diag["light_api"] is True
     assert diag["status"]["step_title"] == "In transito"
     assert diag["status"]["raw_attributes"]["message"] == "Il tuo ordine è stato ritirato"
