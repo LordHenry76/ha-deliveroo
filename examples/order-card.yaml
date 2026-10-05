@@ -1,0 +1,261 @@
+# Deliveroo order card: header with progress bar, 5-step timeline, step / arrival time / rider code.
+#
+# Requires these frontend cards (all available in HACS):
+#   - Mushroom            https://github.com/piitaya/lovelace-mushroom
+#   - card-mod            https://github.com/thomasloven/lovelace-card-mod
+#   - Vertical Stack In Card  https://github.com/ofekashery/vertical-stack-in-card
+#
+# ENTITY IDS: this file assumes ids starting with `sensor.deliveroo_` / `button.deliveroo_`.
+# Yours include the account name (and the area, if the device is in one), e.g. `sensor.deliveroo_alex_order_status`.
+# Check them in Settings > Entities (search "deliveroo") and find/replace before pasting.
+#
+# Tip: press the "Simulate order" button of the integration to see every state of the card.
+
+type: custom:vertical-stack-in-card
+cards:
+  # ── Header + progress bar ──
+  - type: custom:mushroom-template-card
+    entity: sensor.deliveroo_order_status
+    primary: >
+      {% if is_state('sensor.deliveroo_order_status', 'idle') %}Deliveroo
+      {% elif has_value('sensor.deliveroo_restaurant') %}{{ states('sensor.deliveroo_restaurant') }}
+      {% else %}Deliveroo{% endif %}
+    secondary: >-
+      {% set adv = state_attr('sensor.deliveroo_status_message', 'advisory') %}
+      {% if is_state('sensor.deliveroo_order_status', 'idle') %}No order in progress
+      {% elif has_value('sensor.deliveroo_status_message') %}{{ states('sensor.deliveroo_status_message') }}{{ '\n' ~ adv if adv else '' }}
+      {% else %}Order in progress{% endif %}
+    multiline_secondary: true
+    icon: >
+      {% set s = states('sensor.deliveroo_order_status') %}
+      {% set r = state_attr('sensor.deliveroo_order_status', 'rider_route') %}
+      {% if s == 'idle' %}mdi:moped-outline
+      {% elif s == 'completed' %}mdi:home-heart
+      {% elif s == 'failed' %}mdi:alert-circle
+      {% elif r == 'TO_CUSTOMER' %}mdi:moped
+      {% else %}mdi:chef-hat{% endif %}
+    color: >
+      {% set s = states('sensor.deliveroo_order_status') %}
+      {% set e = state_attr('sensor.deliveroo_order_status', 'eta_status') %}
+      {% if s == 'idle' %}grey
+      {% elif s == 'failed' %}red
+      {% elif s != 'completed' and e not in ['ON_TIME', none] %}orange
+      {% else %}teal{% endif %}
+    # Tap opens your orders on the Deliveroo website: use your country's domain
+    tap_action:
+      action: url
+      url_path: https://deliveroo.co.uk/orders
+    # Hold checks for a new order right now
+    hold_action:
+      action: perform-action
+      perform_action: button.press
+      target:
+        entity_id: button.deliveroo_refresh_now
+    card_mod:
+      style: |
+        {% set idle = is_state('sensor.deliveroo_order_status', 'idle') %}
+        ha-card {
+          position: relative;
+          padding-bottom: {{ '0' if idle else '14px' }} !important;
+        }
+        ha-card::after {
+          {% set p = states('sensor.deliveroo_progress') | int(0) %}
+          {% if is_state('sensor.deliveroo_order_status', 'completed') %}{% set p = 100 %}{% endif %}
+          content: "";
+          display: {{ 'none' if idle else 'block' }};
+          position: absolute;
+          left: 16px; right: 16px; bottom: 4px;
+          height: 6px;
+          border-radius: 3px;
+          background: linear-gradient(90deg,
+            #00ccbc {{ p }}%,
+            rgba(127, 127, 127, 0.25) {{ p }}%);
+        }
+
+  # ── 5-step timeline (not clickable) ──
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.deliveroo_order_status
+        state_not: idle
+    card:
+      type: custom:mushroom-chips-card
+      alignment: justify
+      card_mod:
+        style: |
+          {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+          {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+          {% set stop = 100 if done else ([i - 1, 0] | max) * 25 %}
+          ha-card {
+            position: relative;
+            z-index: 0;
+            padding: 8px 16px 4px !important;
+            pointer-events: none;
+            --chip-background: var(--ha-card-background, var(--card-background-color));
+            --chip-border-width: 0;
+            --chip-box-shadow: none;
+          }
+          ha-card::before {
+            content: "";
+            position: absolute;
+            left: 34px; right: 34px;
+            top: calc(50% + 2px);
+            height: 2px;
+            z-index: -1;
+            background: linear-gradient(90deg,
+              #00ccbc {{ stop }}%,
+              rgba(127, 127, 127, 0.3) {{ stop }}%);
+          }
+      chips:
+        # 1 · Order sent
+        - type: template
+          icon: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'mdi:check' if done or i > 1 else 'mdi:send' }}
+          icon_color: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'teal' if done or i >= 1 else 'disabled' }}
+          tap_action: { action: none }
+          hold_action: { action: none }
+          double_tap_action: { action: none }
+          card_mod:
+            style: |
+              {% if state_attr('sensor.deliveroo_step', 'step_index') | int(0) == 1 and not is_state('sensor.deliveroo_order_status', 'completed') %}
+              ha-card { --chip-background: color-mix(in srgb, #00ccbc 25%, var(--ha-card-background, var(--card-background-color))); }
+              {% endif %}
+        # 2 · Awaiting confirmation
+        - type: template
+          icon: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'mdi:check' if done or i > 2 else 'mdi:store' }}
+          icon_color: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'teal' if done or i >= 2 else 'disabled' }}
+          tap_action: { action: none }
+          hold_action: { action: none }
+          double_tap_action: { action: none }
+          card_mod:
+            style: |
+              {% if state_attr('sensor.deliveroo_step', 'step_index') | int(0) == 2 and not is_state('sensor.deliveroo_order_status', 'completed') %}
+              ha-card { --chip-background: color-mix(in srgb, #00ccbc 25%, var(--ha-card-background, var(--card-background-color))); }
+              {% endif %}
+        # 3 · Preparing
+        - type: template
+          icon: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'mdi:check' if done or i > 3 else 'mdi:chef-hat' }}
+          icon_color: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'teal' if done or i >= 3 else 'disabled' }}
+          tap_action: { action: none }
+          hold_action: { action: none }
+          double_tap_action: { action: none }
+          card_mod:
+            style: |
+              {% if state_attr('sensor.deliveroo_step', 'step_index') | int(0) == 3 and not is_state('sensor.deliveroo_order_status', 'completed') %}
+              ha-card { --chip-background: color-mix(in srgb, #00ccbc 25%, var(--ha-card-background, var(--card-background-color))); }
+              {% endif %}
+        # 4 · In transit
+        - type: template
+          icon: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'mdi:check' if done or i > 4 else 'mdi:moped' }}
+          icon_color: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'teal' if done or i >= 4 else 'disabled' }}
+          tap_action: { action: none }
+          hold_action: { action: none }
+          double_tap_action: { action: none }
+          card_mod:
+            style: |
+              {% if state_attr('sensor.deliveroo_step', 'step_index') | int(0) == 4 and not is_state('sensor.deliveroo_order_status', 'completed') %}
+              ha-card { --chip-background: color-mix(in srgb, #00ccbc 25%, var(--ha-card-background, var(--card-background-color))); }
+              {% endif %}
+        # 5 · Rider nearby / delivered
+        - type: template
+          icon: >
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'mdi:check' if done else 'mdi:map-marker' }}
+          icon_color: >
+            {% set i = state_attr('sensor.deliveroo_step', 'step_index') | int(0) %}
+            {% set done = is_state('sensor.deliveroo_order_status', 'completed') %}
+            {{ 'teal' if done or i >= 5 else 'disabled' }}
+          tap_action: { action: none }
+          hold_action: { action: none }
+          double_tap_action: { action: none }
+          card_mod:
+            style: |
+              {% if state_attr('sensor.deliveroo_step', 'step_index') | int(0) == 5 and not is_state('sensor.deliveroo_order_status', 'completed') %}
+              ha-card { --chip-background: color-mix(in srgb, #00ccbc 25%, var(--ha-card-background, var(--card-background-color))); }
+              {% endif %}
+
+  # ── Step, arrival time, rider code (not clickable) ──
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.deliveroo_order_status
+        state_not: idle
+      - condition: state
+        entity: sensor.deliveroo_order_status
+        state_not: completed
+    card:
+      type: custom:mushroom-chips-card
+      alignment: center
+      card_mod:
+        style: |
+          ha-card {
+            padding: 4px 16px 12px !important;
+            pointer-events: none;
+          }
+      chips:
+        - type: conditional
+          conditions:
+            - condition: state
+              entity: sensor.deliveroo_step
+              state_not: unknown
+          chip:
+            type: template
+            icon: mdi:timeline-check
+            content: "{{ states('sensor.deliveroo_step') }}"
+            icon_color: teal
+            tap_action: { action: none }
+            hold_action: { action: none }
+            double_tap_action: { action: none }
+        - type: conditional
+          conditions:
+            - condition: state
+              entity: sensor.deliveroo_estimated_arrival
+              state_not: unknown
+          chip:
+            type: template
+            icon: mdi:clock-outline
+            content: >
+              {% set e = state_attr('sensor.deliveroo_order_status', 'eta_status') %}
+              {{ states('sensor.deliveroo_estimated_arrival') }}{{ ' · late' if e not in ['ON_TIME', none] else '' }}
+            icon_color: >
+              {% set e = state_attr('sensor.deliveroo_order_status', 'eta_status') %}
+              {{ 'orange' if e not in ['ON_TIME', none] else 'teal' }}
+            tap_action: { action: none }
+            hold_action: { action: none }
+            double_tap_action: { action: none }
+        - type: conditional
+          conditions:
+            - condition: state
+              entity: sensor.deliveroo_rider_code
+              state_not: unknown
+          chip:
+            type: template
+            icon: mdi:key-variant
+            content: "{{ states('sensor.deliveroo_rider_code') }}"
+            icon_color: amber
+            tap_action: { action: none }
+            hold_action: { action: none }
+            double_tap_action: { action: none }

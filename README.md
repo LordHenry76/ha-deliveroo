@@ -4,6 +4,8 @@ Track your Deliveroo orders in Home Assistant: status, estimated arrival, progre
 code to give the rider, with an event on every change so you can build automations
 (notifications, turn on the porch light when the rider is on the way, …).
 
+![The example dashboard card through the five steps of an order](docs/card-phases.png)
+
 > **Unofficial.** Deliveroo has no public consumer API. This integration reads the same data the
 > Deliveroo website uses. It can break at any time if Deliveroo changes its website, and
 > automated access may be against Deliveroo's terms of service. Use at your own risk.
@@ -97,6 +99,20 @@ actions:
 Event data: `order_id`, `state`, `step`, `step_index`, `step_count`, `message`, `advisory`, `eta`,
 `eta_status`, `estimated_delivery`, `progress`, `rider_route`, `rider_status`, `rider_code`,
 `restaurant`, `is_completed`, `is_failed`, `simulated`, `config_entry_id`.
+
+## Dashboard card
+
+The card in the picture above is in [`examples/order-card.yaml`](examples/order-card.yaml)
+(Italian entity ids and texts: [`examples/order-card.it.yaml`](examples/order-card.it.yaml)).
+It stays compact while idle and expands during an order: progress bar, the five-step timeline,
+current step, arrival time and rider code.
+
+It needs three frontend cards from HACS: [Mushroom](https://github.com/piitaya/lovelace-mushroom),
+[card-mod](https://github.com/thomasloven/lovelace-card-mod) and
+[Vertical Stack In Card](https://github.com/ofekashery/vertical-stack-in-card).
+
+Entity ids depend on your Home Assistant language, on the account name and on the area of the
+device, so check yours in **Settings → Entities** and find/replace them in the file before pasting.
 
 ## Try it without ordering
 
