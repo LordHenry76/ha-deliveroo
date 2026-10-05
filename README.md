@@ -30,14 +30,21 @@ Copy `custom_components/deliveroo` into your `config/custom_components/` folder 
 
 ## Configuration
 
-You need the `consumer_auth_token` cookie of your Deliveroo session (it lasts about 60 days):
+You need the `consumer_auth_token` cookie of your Deliveroo session:
 
 1. Log in on the Deliveroo website from a desktop browser.
 2. Open the developer tools (F12) → **Application** (Chrome) / **Storage** (Firefox) → **Cookies** → `https://deliveroo.<country>`.
-3. Copy the **value** of `consumer_auth_token` and paste it in the integration setup.
+3. Copy the **value** of `consumer_auth_token` (it starts with `eyJ`) and paste it in the integration setup.
 
-Treat it like a password: it gives access to your Deliveroo account.
-When it expires, Home Assistant asks you to re-authenticate with a fresh cookie.
+Things to know:
+
+* **Do not log out** of the website afterwards: logging out invalidates the cookie. Just close the tab.
+* Treat it like a password: it gives access to your Deliveroo account.
+* **How long it lasts** is decided by Deliveroo and not documented. The expiry written inside the
+  token is not enforced (tokens keep working well past it). When Deliveroo finally rejects it,
+  Home Assistant asks you to re-authenticate with a fresh cookie.
+* **Why not a normal login?** Deliveroo's login endpoints are protected by a browser challenge that
+  only a real browser can pass. This integration does not try to get around it.
 
 ## Entities
 
@@ -92,13 +99,16 @@ Event data: `order_id`, `state`, `step`, `step_index`, `step_count`, `message`, 
 
 ## How it works
 
-* **Idle:** every 30 seconds (configurable) it asks Deliveroo's API for your orders in progress.
+The cookie value is a token that Deliveroo's API accepts directly, so the integration only talks
+to the API host (`api.<country>.deliveroo.com`):
+
+* **Idle:** every 30 seconds (configurable) it asks for your orders in progress.
   The answer is a few dozen bytes when there are none.
 * **During an order:** it polls the order tracking endpoint every 20 seconds (configurable) and
   goes back to idle as soon as the order is delivered or cancelled.
-* **Session:** the order history web page is read only at start-up, every 6 hours and when the
-  API rejects the token. It provides the short-lived API token and validates the session cookie.
-  If Deliveroo rotates the cookie, the new value is saved automatically.
+* **Website:** the order history web page is not needed. It is visited every 6 hours as a
+  best-effort keep-alive (a failure there is harmless), and when the API rejects the token, in
+  case Deliveroo has issued a new one, which is then saved automatically.
 * **Fallback:** if the lightweight API is unavailable (for example in an untested country), the
   integration detects orders from the web page instead, at most every 2 minutes, and retries the
   API after an hour.

@@ -41,7 +41,6 @@ _LOGGER = logging.getLogger(__name__)
 class DeliverooData:
     """Snapshot exposed to the entities."""
 
-    account_name: str | None
     active_order_id: str | None
     status: DeliverooOrderStatus | None
 
@@ -50,11 +49,15 @@ type DeliverooConfigEntry = ConfigEntry[DeliverooCoordinator]
 
 
 class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
-    """Polls Deliveroo at two speeds.
+    """Polls the Deliveroo API at two speeds.
 
-    Idle: a tiny "active orders" API call. During an order: the live status
-    endpoint. The heavy server-rendered orders page is only read at start-up,
-    every few hours, and when the API rejects the Bearer token.
+    Idle: a tiny "active orders" call. During an order: the live status
+    endpoint. Both use the session token directly as a Bearer token.
+
+    The website's orders page is not needed for normal operation. It is read:
+    * every few hours as a best-effort session keep-alive,
+    * when the API rejects the token (Deliveroo may have rotated it),
+    * as a fallback to detect orders if the lightweight API is unavailable.
     """
 
     config_entry: DeliverooConfigEntry
@@ -80,13 +83,12 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
             update_interval=self.idle_interval,
         )
         self.client = client
-        self._account: DeliverooAccount | None = None
-        self._account_fetched: datetime | None = None
         self._active_id: str | None = None
         self._sharing_tokens: dict[str, str] = {}
         self._finished: set[str] = set()
         self._last_signature: tuple | None = None
         self._light_api_disabled_until: datetime | None = None
+        self._last_page_read: datetime = dt_util.utcnow()
 
     @property
     def light_api_enabled(self) -> bool:
@@ -98,58 +100,78 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
         """Check for a new order now (used by the refresh button)."""
         await self.async_refresh()
 
-    def _account_age(self) -> timedelta | None:
-        if self._account is None or self._account_fetched is None:
-            return None
-        return dt_util.utcnow() - self._account_fetched
+    # ── Website page: keep-alive, token recovery, fallback ──────────────────
 
-    def _account_is_stale(self) -> bool:
-        age = self._account_age()
-        if age is None:
-            return True
-        if self._active_id is None and not self.light_api_enabled:
-            # Fallback mode: the orders page is the only way to spot a new order.
-            return True
-        # The Bearer's "exp" is deliberately ignored: the website keeps serving the
-        # same token after it expires and the API still accepts it. The token is
-        # refreshed only when the API answers 401.
-        return age >= SESSION_REFRESH
-
-    async def _async_refresh_account(self) -> None:
-        try:
-            account = await self.client.async_get_account()
-        except DeliverooAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
-        except DeliverooError as err:
-            raise UpdateFailed(f"Deliveroo orders page: {err}") from err
-
-        self._account = account
-        self._account_fetched = dt_util.utcnow()
-
-        # Deliveroo may rotate the long-lived cookie: persist the new value.
+    def _persist_token(self) -> None:
+        """Save the token if Deliveroo rotated it."""
         entry = self.config_entry
         if self.client.token != entry.data.get(CONF_TOKEN):
             self.hass.config_entries.async_update_entry(
                 entry, data={**entry.data, CONF_TOKEN: self.client.token}
             )
 
-    async def _async_list_active(self) -> list[DeliverooOrder]:
-        """Active orders from the lightweight API, refreshing the Bearer on 401."""
-        assert self._account is not None
-        try:
-            return await self.client.async_get_active_orders(self._account.bearer)
-        except DeliverooAuthError:
-            _LOGGER.debug("Bearer rejected by the active-orders API")
+    async def _async_read_page(self) -> DeliverooAccount:
+        """Read the orders page and persist a rotated token."""
+        account = await self.client.async_get_account()
+        self._last_page_read = dt_util.utcnow()
+        self._persist_token()
+        return account
 
-        previous = self._account.bearer
-        await self._async_refresh_account()
-        if self._account.bearer == previous:
-            raise DeliverooAuthError("Bearer rejected and no fresh token available")
-        return await self.client.async_get_active_orders(self._account.bearer)
+    async def _async_recover_token(self) -> None:
+        """The API rejected the token: see if the website hands out a new one.
+
+        Raises ConfigEntryAuthFailed (→ re-authentication) unless a different
+        token was obtained.
+        """
+        previous = self.client.token
+        try:
+            await self._async_read_page()
+        except DeliverooAuthError as err:
+            raise ConfigEntryAuthFailed("Deliveroo session expired") from err
+        except DeliverooError as err:
+            raise UpdateFailed(f"Deliveroo token recovery: {err}") from err
+        if self.client.token == previous:
+            raise ConfigEntryAuthFailed("Deliveroo rejected the session token")
+
+    async def _async_keep_alive(self) -> None:
+        """Best effort: visit the website now and then, like a browser would."""
+        if dt_util.utcnow() - self._last_page_read < SESSION_REFRESH:
+            return
+        self._last_page_read = dt_util.utcnow()  # do not retry on every tick
+        try:
+            await self._async_read_page()
+        except DeliverooAuthError:
+            _LOGGER.warning(
+                "The Deliveroo website no longer recognises the session, "
+                "but the API still accepts it"
+            )
+        except DeliverooError as err:
+            _LOGGER.debug("Deliveroo keep-alive failed: %s", err)
+
+    # ── Order detection ─────────────────────────────────────────────────────
+
+    async def _async_list_active(self) -> list[DeliverooOrder]:
+        """Active orders from the lightweight API, recovering the token on 401."""
+        try:
+            return await self.client.async_get_active_orders()
+        except DeliverooAuthError:
+            _LOGGER.debug("Token rejected by the active-orders API")
+        await self._async_recover_token()
+        try:
+            return await self.client.async_get_active_orders()
+        except DeliverooAuthError as err:
+            raise ConfigEntryAuthFailed("Deliveroo rejected the session token") from err
+
+    async def _async_list_active_from_page(self) -> list[DeliverooOrder]:
+        try:
+            return (await self._async_read_page()).active_orders
+        except DeliverooAuthError as err:
+            raise ConfigEntryAuthFailed("Deliveroo session expired") from err
+        except DeliverooError as err:
+            raise UpdateFailed(f"Deliveroo orders page: {err}") from err
 
     async def _async_detect_active(self) -> None:
         """Find out whether an order is in progress."""
-        assert self._account is not None
         orders: list[DeliverooOrder]
         if self.light_api_enabled:
             try:
@@ -157,8 +179,7 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
             except DeliverooConnectionError as err:
                 raise UpdateFailed(f"Deliveroo active orders: {err}") from err
             except DeliverooError as err:
-                # Endpoint missing in this market, rate limited, or Bearer unusable:
-                # fall back to the orders page for a while.
+                # Endpoint missing in this market or rate limited: use the page.
                 _LOGGER.warning(
                     "Deliveroo active-orders API unavailable (%s); "
                     "falling back to the orders page for %s",
@@ -166,47 +187,37 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
                     LIGHT_API_RETRY,
                 )
                 self._light_api_disabled_until = dt_util.utcnow() + LIGHT_API_RETRY
-                age = self._account_age()
-                if age is None or age > timedelta(seconds=60):
-                    await self._async_refresh_account()
-                orders = self._account.active_orders
+                orders = await self._async_list_active_from_page()
         else:
-            orders = self._account.active_orders
+            orders = await self._async_list_active_from_page()
 
         active = [o for o in orders if o.id not in self._finished]
         self._active_id = active[0].id if active else None
 
-    async def _async_fetch_status(self, order_id: str) -> DeliverooOrderStatus:
-        assert self._account is not None
-        try:
-            return await self.client.async_get_order_status(
-                order_id, bearer=self._account.bearer
-            )
-        except DeliverooAuthError:
-            _LOGGER.debug("Bearer rejected for order %s", order_id)
+    # ── Live status ─────────────────────────────────────────────────────────
 
-        # 1) Public sharing token, if we already know it for this order.
+    async def _async_fetch_status(self, order_id: str) -> DeliverooOrderStatus:
+        try:
+            return await self.client.async_get_order_status(order_id)
+        except DeliverooAuthError:
+            _LOGGER.debug("Token rejected for order %s", order_id)
+
+        # 1) Public sharing token, if we already know it for this order:
+        #    keep tracking the order, and sort the session out afterwards.
         sharing = self._sharing_tokens.get(order_id)
         if sharing is not None:
-            self._account_fetched = None  # re-read the orders page next tick
             return await self.client.async_get_order_status(
                 order_id, sharing_token=sharing
             )
 
-        # 2) Re-read the orders page now for a fresh Bearer and retry once.
-        previous = self._account.bearer
-        await self._async_refresh_account()
-        if self._account.bearer == previous:
-            raise DeliverooAuthError("Bearer rejected and no fresh token available")
-        return await self.client.async_get_order_status(
-            order_id, bearer=self._account.bearer
-        )
+        # 2) See if the website hands out a new token and retry once.
+        await self._async_recover_token()
+        try:
+            return await self.client.async_get_order_status(order_id)
+        except DeliverooAuthError as err:
+            raise ConfigEntryAuthFailed("Deliveroo rejected the session token") from err
 
     async def _async_update_data(self) -> DeliverooData:
-        if self._account_is_stale():
-            await self._async_refresh_account()
-        assert self._account is not None
-
         if self._active_id is None:
             await self._async_detect_active()
 
@@ -227,6 +238,9 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
 
             self._fire_event_if_changed(status)
 
+        if self.light_api_enabled:
+            await self._async_keep_alive()
+
         if self._active_id is not None:
             self.update_interval = self.active_interval
         elif self.light_api_enabled:
@@ -234,11 +248,7 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
         else:
             self.update_interval = max(self.idle_interval, FALLBACK_IDLE_INTERVAL)
 
-        return DeliverooData(
-            account_name=self._account.name,
-            active_order_id=self._active_id,
-            status=status,
-        )
+        return DeliverooData(active_order_id=self._active_id, status=status)
 
     def _fire_event_if_changed(self, status: DeliverooOrderStatus) -> None:
         signature = (

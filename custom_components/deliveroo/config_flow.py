@@ -29,10 +29,12 @@ from homeassistant.helpers.selector import (
 from . import create_client
 from .api import (
     MARKETS,
-    DeliverooAccount,
     DeliverooAuthError,
     DeliverooBlockedError,
     DeliverooError,
+    DeliverooUser,
+    normalize_token,
+    token_customer_id,
 )
 from .const import (
     CONF_ACTIVE_INTERVAL,
@@ -66,11 +68,20 @@ class DeliverooConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _async_validate(
         self, market: str, token: str
-    ) -> tuple[DeliverooAccount | None, str | None, dict[str, str]]:
-        """Validate the cookie. Returns (account, possibly-rotated token, errors)."""
+    ) -> tuple[DeliverooUser | None, str | None, dict[str, str]]:
+        """Validate the session token against the API.
+
+        Returns (user, cleaned token, errors). Only the API host is contacted.
+        """
+        token = normalize_token(token)
+        try:
+            token_customer_id(token)
+        except DeliverooAuthError:
+            return None, None, {"base": "invalid_format"}
+
         client, session = create_client(self.hass, market, token, auto_cleanup=False)
         try:
-            account = await client.async_get_account()
+            user = await client.async_get_user()
         except DeliverooAuthError:
             return None, None, {"base": "invalid_auth"}
         except DeliverooBlockedError:
@@ -82,7 +93,7 @@ class DeliverooConfigFlow(ConfigFlow, domain=DOMAIN):
             return None, None, {"base": "unknown"}
         finally:
             session.detach()
-        return account, client.token, {}
+        return user, client.token, {}
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

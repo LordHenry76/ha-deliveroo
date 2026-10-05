@@ -289,3 +289,72 @@ async def _active_orders_flow() -> None:
     finally:
         await runner.cleanup()
         api.MARKETS.pop("test", None)
+
+
+def test_token_helpers() -> None:
+    token = make_jwt(2_000_000_000)
+    for raw in (token, f"  {token}\n", f'consumer_auth_token="{token}"; Path=/; HttpOnly', f"'{token}'"):
+        assert api.normalize_token(raw) == token
+    assert api.token_customer_id(token) == "123"
+    for bad in ("", "abc", "a.b", "a..c", "eyJ.not-base64-json.sig"):
+        with pytest.raises(api.DeliverooAuthError):
+            api.token_customer_id(bad)
+    no_cust = f"{_b64({'alg': 'x'})}.{_b64({'iss': 'rooconsumerauth'})}.sig"
+    with pytest.raises(api.DeliverooAuthError):
+        api.token_customer_id(no_cust)
+
+
+def test_parse_user() -> None:
+    assert api.parse_user("1", {"first_name": "Alex", "preferred_name": " Al "}).name == "Al"
+    assert api.parse_user("1", {"first_name": "Alex", "preferred_name": ""}).name == "Alex"
+    assert api.parse_user("1", {"user": {"first_name": "Nested"}}).name == "Nested"
+    assert api.parse_user("1", {"email": "x"}).name is None
+    assert api.parse_user("1", None).name is None
+    assert api.parse_user("7", {}).customer_id == "7"
+
+
+def test_user_and_default_bearer_against_fake_server(socket_enabled) -> None:
+    asyncio.run(_user_flow())
+
+
+async def _user_flow() -> None:
+    seen: dict = {}
+    token = make_jwt(1)  # "expired" on paper: Deliveroo does not enforce exp
+
+    async def user(request: web.Request) -> web.Response:
+        seen["user"] = (request.match_info["cid"], request.headers.get("Authorization"))
+        if request.headers.get("Authorization") != f"Bearer {token}":
+            return web.Response(status=401)
+        return web.json_response({"id": 123, "first_name": "Alex", "email": "hidden"})
+
+    async def orders(request: web.Request) -> web.Response:
+        seen["orders"] = request.headers.get("Authorization")
+        return web.json_response({"orders": [], "count": 0})
+
+    app = web.Application()
+    app.router.add_get("/orderapp/v1/users/{cid}", user)
+    app.router.add_get("/consumer/order-history/v1/orders", orders)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    api.MARKETS["test"] = {"web": base, "api": base, "lang": "it"}
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
+            client = api.DeliverooClient(session, "test", f"consumer_auth_token={token}", "Europe/Rome")
+            assert client.token == token
+            user_info = await client.async_get_user()
+            assert (user_info.customer_id, user_info.name) == ("123", "Alex")
+            assert seen["user"] == ("123", f"Bearer {token}")
+            # without an explicit bearer the session token is used
+            assert await client.async_get_active_orders() == []
+            assert seen["orders"] == f"Bearer {token}"
+
+            other = api.DeliverooClient(session, "test", make_jwt(5), "Europe/Rome")
+            with pytest.raises(api.DeliverooAuthError):
+                await other.async_get_user()
+    finally:
+        await runner.cleanup()
+        api.MARKETS.pop("test", None)

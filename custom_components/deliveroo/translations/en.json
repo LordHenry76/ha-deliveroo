@@ -3,13 +3,13 @@
     "step": {
       "user": {
         "title": "Deliveroo",
-        "description": "Unofficial integration: it reads your order status the same way the Deliveroo website does. Only Italy has been fully tested.",
+        "description": "Unofficial integration: it reads your order status from the same API the Deliveroo website uses. Only Italy has been fully tested.",
         "data": {
           "market": "Country",
           "consumer_auth_token": "Session cookie"
         },
         "data_description": {
-          "consumer_auth_token": "Value of the `consumer_auth_token` cookie from your country's Deliveroo website (browser DevTools → Application → Cookies). It lasts about 60 days."
+          "consumer_auth_token": "Value of the `consumer_auth_token` cookie from your country's Deliveroo website (browser DevTools → Application → Cookies). Do not log out of the website after copying it: that would invalidate it."
         }
       },
       "reauth_confirm": {
@@ -19,15 +19,16 @@
           "consumer_auth_token": "Session cookie"
         },
         "data_description": {
-          "consumer_auth_token": "Value of the `consumer_auth_token` cookie from your country's Deliveroo website (browser DevTools → Application → Cookies). It lasts about 60 days."
+          "consumer_auth_token": "Value of the `consumer_auth_token` cookie from your country's Deliveroo website (browser DevTools → Application → Cookies). Do not log out of the website after copying it: that would invalidate it."
         }
       }
     },
     "error": {
-      "invalid_auth": "The cookie is not valid or has expired.",
+      "invalid_auth": "Deliveroo does not accept this cookie: it expired or you logged out. Log in to the website again and copy the current value.",
       "blocked": "Deliveroo's bot protection rejected the request. Try again later.",
       "cannot_connect": "Failed to connect to Deliveroo.",
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "invalid_format": "That does not look like the right cookie: it must be the value of `consumer_auth_token`, which starts with `eyJ`."
     },
     "abort": {
       "already_configured": "This Deliveroo account is already configured.",

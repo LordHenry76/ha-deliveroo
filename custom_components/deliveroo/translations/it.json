@@ -3,13 +3,13 @@
     "step": {
       "user": {
         "title": "Deliveroo",
-        "description": "Integrazione non ufficiale: legge lo stato degli ordini come fa il sito Deliveroo. Solo l'Italia è stata testata a fondo.",
+        "description": "Integrazione non ufficiale: legge lo stato degli ordini dalle stesse API usate dal sito Deliveroo. Solo l'Italia è stata testata a fondo.",
         "data": {
           "market": "Paese",
           "consumer_auth_token": "Cookie di sessione"
         },
         "data_description": {
-          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Non fare logout dal sito dopo averlo copiato: lo invaliderebbe."
         }
       },
       "reauth_confirm": {
@@ -19,15 +19,16 @@
           "consumer_auth_token": "Cookie di sessione"
         },
         "data_description": {
-          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Non fare logout dal sito dopo averlo copiato: lo invaliderebbe."
         }
       }
     },
     "error": {
-      "invalid_auth": "Il cookie non è valido o è scaduto.",
+      "invalid_auth": "Deliveroo non accetta questo cookie: è scaduto oppure hai fatto logout. Accedi di nuovo al sito e copia il valore aggiornato.",
       "blocked": "La protezione anti-bot di Deliveroo ha rifiutato la richiesta. Riprova più tardi.",
       "cannot_connect": "Impossibile connettersi a Deliveroo.",
-      "unknown": "Errore imprevisto."
+      "unknown": "Errore imprevisto.",
+      "invalid_format": "Quello incollato non sembra il cookie giusto: deve essere il valore di `consumer_auth_token`, che inizia con `eyJ`."
     },
     "abort": {
       "already_configured": "Questo account Deliveroo è già configurato.",

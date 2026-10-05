@@ -1,17 +1,24 @@
-"""Unofficial client for the Deliveroo consumer web API.
+"""Unofficial client for the Deliveroo consumer API.
 
 Deliveroo has no public consumer API. This module relies on what the
-deliveroo.<tld> website itself uses:
+deliveroo.<tld> website itself uses.
 
-* ``GET https://deliveroo.<tld>/<lang>/orders`` rendered server side (Next.js).
-  With the long-lived ``consumer_auth_token`` cookie it returns the order
-  history and a short-lived Bearer JWT embedded in ``__NEXT_DATA__``.
-* ``GET https://api.<market>.deliveroo.com/consumer/order-history/v1/orders?state=active``
-  which returns only the orders in progress (a few bytes when there are none),
-  authenticated with the Bearer JWT. This is what makes frequent idle checks cheap.
-* ``GET https://api.<market>.deliveroo.com/consumer/v2-6/consumer_order_statuses/<id>``
-  which returns the live tracking data (JSON:API), authenticated either with the
-  Bearer JWT or with the order's public ``sharing_token``.
+The session is the ``consumer_auth_token`` cookie of the website. Its value is a
+JWT that the API accepts directly as a Bearer token, so normal operation only
+talks to ``api.<market>.deliveroo.com``:
+
+* ``GET /orderapp/v1/users/<id>``: account check (id is the JWT ``cust`` claim).
+* ``GET /consumer/order-history/v1/orders?state=active``: the orders in progress
+  (a few dozen bytes when there are none).
+* ``GET /consumer/v2-6/consumer_order_statuses/<id>``: live tracking (JSON:API),
+  with the Bearer token or the order's public ``sharing_token``.
+
+The server-rendered ``https://deliveroo.<tld>/<lang>/orders`` page is only used
+as a best-effort session keep-alive and as a fallback when the lightweight API
+is unavailable.
+
+Note: the ``exp`` claim of the token is not enforced by Deliveroo (tokens keep
+working days after it), so it is never used to decide whether to refresh.
 
 This module must not import Home Assistant so it can be tested standalone.
 """
@@ -39,6 +46,7 @@ USER_AGENT = (
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 STATUS_PATH = "/consumer/v2-6/consumer_order_statuses/{order_id}"
 ORDER_HISTORY_PATH = "/consumer/order-history/v1/orders"
+USER_PATH = "/orderapp/v1/users/{customer_id}"
 
 # Only "it" has been verified end to end. The others follow the same pattern
 # (web domain + api.<market>.deliveroo.com) and are considered experimental.
@@ -89,6 +97,59 @@ def decode_jwt_payload(segment: str) -> dict[str, Any]:
     """Decode the (unverified) payload segment of a JWT."""
     padded = segment + "=" * (-len(segment) % 4)
     return json.loads(base64.urlsafe_b64decode(padded))
+
+
+def normalize_token(raw: str) -> str:
+    """Clean a pasted cookie: spaces, quotes, ``name=`` prefix, trailing attributes."""
+    token = (raw or "").strip().strip("\"'")
+    if token.lower().startswith(f"{COOKIE_NAME}="):
+        token = token[len(COOKIE_NAME) + 1 :]
+    return token.split(";", 1)[0].strip().strip("\"'")
+
+
+def token_claims(token: str) -> dict[str, Any]:
+    """Return the (unverified) claims of the session token."""
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise DeliverooAuthError("The session token is not a valid JWT")
+    try:
+        claims = decode_jwt_payload(parts[1])
+    except (ValueError, UnicodeDecodeError) as err:
+        raise DeliverooAuthError("The session token is not a valid JWT") from err
+    if not isinstance(claims, dict):
+        raise DeliverooAuthError("The session token is not a valid JWT")
+    return claims
+
+
+def token_customer_id(token: str) -> str:
+    """Return the customer id stored in the session token."""
+    customer_id = token_claims(token).get("cust")
+    if customer_id in (None, ""):
+        raise DeliverooAuthError("The session token has no customer id")
+    return str(customer_id)
+
+
+@dataclass(slots=True)
+class DeliverooUser:
+    """The account the session token belongs to."""
+
+    customer_id: str
+    name: str | None
+
+
+def parse_user(customer_id: str, payload: Any) -> DeliverooUser:
+    """Parse the user document; tolerate a nested ``user`` object."""
+    data = payload if isinstance(payload, dict) else {}
+    name = None
+    for source in (data, data.get("user") if isinstance(data.get("user"), dict) else {}):
+        for key in ("preferred_name", "first_name"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                name = value.strip()
+                break
+        if name:
+            break
+    return DeliverooUser(customer_id=customer_id, name=name)
 
 
 @dataclass(slots=True)
@@ -345,12 +406,12 @@ class DeliverooClient:
             raise ValueError(f"Unsupported market: {market}")
         self._session = session
         self._market = MARKETS[market]
-        self._token = token.strip()
+        self._token = normalize_token(token)
         self._time_zone = time_zone
 
     @property
     def token(self) -> str:
-        """Current session cookie (Deliveroo may rotate it)."""
+        """Current session token (Deliveroo may rotate it)."""
         return self._token
 
     def _base_headers(self) -> dict[str, str]:
@@ -361,7 +422,7 @@ class DeliverooClient:
         }
 
     async def async_get_account(self) -> DeliverooAccount:
-        """Fetch the orders page: session check, Bearer token and order history."""
+        """Fetch the orders page (keep-alive / fallback): session check and history."""
         url = f"{self._market['web']}/{self._market['lang']}/orders"
         headers = {
             **self._base_headers(),
@@ -390,22 +451,30 @@ class DeliverooClient:
             raise DeliverooError(f"HTTP {status} on orders page")
         return parse_orders_page(body)
 
-    async def async_get_active_orders(self, bearer: str) -> list[DeliverooOrder]:
-        """Fetch only the orders in progress (tiny response when there are none)."""
+    async def _async_api_get(
+        self,
+        path: str,
+        what: str,
+        *,
+        bearer: str | None,
+        params: dict[str, str] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Any:
+        """GET a JSON document from the API host and map HTTP errors."""
         headers = {
             **self._base_headers(),
             "Accept": "application/json, application/vnd.api+json",
-            "Authorization": f"Bearer {bearer}",
             "Origin": self._market["web"],
             "Referer": f"{self._market['web']}/",
-            "X-Roo-RequestSource": "orders",
+            **(extra_headers or {}),
         }
-        url = self._market["api"] + ORDER_HISTORY_PATH
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
         try:
             async with self._session.get(
-                url,
+                self._market["api"] + path,
                 headers=headers,
-                params={"state": "active"},
+                params=params,
                 timeout=REQUEST_TIMEOUT,
             ) as resp:
                 body = await resp.text()
@@ -414,15 +483,35 @@ class DeliverooClient:
             raise DeliverooConnectionError(str(err)) from err
 
         if status == 401:
-            raise DeliverooAuthError("HTTP 401 on active orders")
+            raise DeliverooAuthError(f"HTTP 401 on {what}")
         if status in (403, 429, 503):
-            raise DeliverooBlockedError(f"HTTP {status} on active orders")
+            raise DeliverooBlockedError(f"HTTP {status} on {what}")
         if status != 200:
-            raise DeliverooError(f"HTTP {status} on active orders")
+            raise DeliverooError(f"HTTP {status} on {what}")
         try:
-            payload = json.loads(body)
+            return json.loads(body)
         except ValueError as err:
-            raise DeliverooError("Invalid active orders JSON") from err
+            raise DeliverooError(f"Invalid JSON on {what}") from err
+
+    async def async_get_user(self) -> DeliverooUser:
+        """Validate the session token and return the account it belongs to."""
+        customer_id = token_customer_id(self._token)
+        payload = await self._async_api_get(
+            USER_PATH.format(customer_id=customer_id), "user", bearer=self._token
+        )
+        return parse_user(customer_id, payload)
+
+    async def async_get_active_orders(
+        self, bearer: str | None = None
+    ) -> list[DeliverooOrder]:
+        """Fetch only the orders in progress (tiny response when there are none)."""
+        payload = await self._async_api_get(
+            ORDER_HISTORY_PATH,
+            "active orders",
+            bearer=bearer or self._token,
+            params={"state": "active"},
+            extra_headers={"X-Roo-RequestSource": "orders"},
+        )
         return parse_order_list(payload)
 
     async def async_get_order_status(
@@ -432,39 +521,14 @@ class DeliverooClient:
         bearer: str | None = None,
         sharing_token: str | None = None,
     ) -> DeliverooOrderStatus:
-        """Fetch live tracking data with the Bearer token or the sharing token."""
+        """Fetch live tracking data with the session token or a sharing token."""
         params = {"tz": self._time_zone}
-        headers = {
-            **self._base_headers(),
-            "Accept": "application/json, application/vnd.api+json",
-            "Origin": self._market["web"],
-            "Referer": f"{self._market['web']}/",
-        }
         if sharing_token:
             params["sharing_token"] = sharing_token
-        elif bearer:
-            headers["Authorization"] = f"Bearer {bearer}"
-        else:
-            raise ValueError("A bearer token or a sharing token is required")
-
-        url = self._market["api"] + STATUS_PATH.format(order_id=order_id)
-        try:
-            async with self._session.get(
-                url, headers=headers, params=params, timeout=REQUEST_TIMEOUT
-            ) as resp:
-                body = await resp.text()
-                status = resp.status
-        except (aiohttp.ClientError, TimeoutError) as err:
-            raise DeliverooConnectionError(str(err)) from err
-
-        if status == 401:
-            raise DeliverooAuthError("HTTP 401 on order status")
-        if status in (403, 429, 503):
-            raise DeliverooBlockedError(f"HTTP {status} on order status")
-        if status != 200:
-            raise DeliverooError(f"HTTP {status} on order status")
-        try:
-            payload = json.loads(body)
-        except ValueError as err:
-            raise DeliverooError("Invalid order status JSON") from err
+        payload = await self._async_api_get(
+            STATUS_PATH.format(order_id=order_id),
+            "order status",
+            bearer=None if sharing_token else (bearer or self._token),
+            params=params,
+        )
         return parse_order_status(order_id, payload)
