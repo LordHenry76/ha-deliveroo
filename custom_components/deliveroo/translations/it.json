@@ -9,7 +9,7 @@
           "consumer_auth_token": "Cookie di sessione"
         },
         "data_description": {
-          "consumer_auth_token": "Valore del cookie `consumer_auth_token` di deliveroo.<paese> (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
         }
       },
       "reauth_confirm": {
@@ -19,7 +19,7 @@
           "consumer_auth_token": "Cookie di sessione"
         },
         "data_description": {
-          "consumer_auth_token": "Valore del cookie `consumer_auth_token` di deliveroo.<paese> (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
+          "consumer_auth_token": "Valore del cookie `consumer_auth_token` preso dal sito Deliveroo del tuo paese (DevTools del browser → Application → Cookies). Dura circa 60 giorni."
         }
       }
     },
