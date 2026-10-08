@@ -34,12 +34,11 @@ cards:
       {% elif s == 'failed' %}mdi:alert-circle
       {% elif r == 'TO_CUSTOMER' %}mdi:moped
       {% else %}mdi:chef-hat{% endif %}
+    # A delay is shown on the arrival-time chip only, to keep the header calm
     color: >
       {% set s = states('sensor.deliveroo_order_status') %}
-      {% set e = state_attr('sensor.deliveroo_order_status', 'eta_status') %}
       {% if s == 'idle' %}grey
       {% elif s == 'failed' %}red
-      {% elif s != 'completed' and e not in ['ON_TIME', none] %}orange
       {% else %}teal{% endif %}
     # Tap opens your orders on the Deliveroo website: use your country's domain
     tap_action:

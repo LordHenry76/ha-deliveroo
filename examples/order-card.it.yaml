@@ -34,12 +34,11 @@ cards:
       {% elif s == 'failed' %}mdi:alert-circle
       {% elif r == 'TO_CUSTOMER' %}mdi:moped
       {% else %}mdi:chef-hat{% endif %}
+    # Il ritardo è segnalato solo nel chip dell'orario, per non appesantire l'intestazione
     color: >
       {% set s = states('sensor.deliveroo_stato_ordine') %}
-      {% set e = state_attr('sensor.deliveroo_stato_ordine', 'eta_status') %}
       {% if s == 'idle' %}grey
       {% elif s == 'failed' %}red
-      {% elif s != 'completed' and e not in ['ON_TIME', none] %}orange
       {% else %}teal{% endif %}
     # Il tocco apre i tuoi ordini sul sito Deliveroo
     tap_action:
