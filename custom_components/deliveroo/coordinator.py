@@ -125,6 +125,7 @@ class DeliverooCoordinator(DataUpdateCoordinator[DeliverooData]):
             SIMULATION_DURATION.total_seconds(),
             lang=self.client.language,
             start_local=dt_util.as_local(start),
+            home=(self.hass.config.latitude, self.hass.config.longitude),
         )
         status = parse_order_status(DEMO_ORDER_ID, payload)
         self._fire_event_if_changed(status, simulated=True)

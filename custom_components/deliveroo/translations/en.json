@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Deliveroo",
-        "description": "Unofficial integration: it reads your order status from the same API the Deliveroo website uses. Only Italy has been fully tested.",
+        "description": "Unofficial integration: it reads your order status from the same API the Deliveroo website uses. Tested in Italy and France.",
         "data": {
           "market": "Country",
           "consumer_auth_token": "Session cookie"
@@ -66,6 +66,12 @@
       "progress": {
         "name": "Progress"
       },
+      "rider_minutes": {
+        "name": "Rider arrival in"
+      },
+      "rider_distance": {
+        "name": "Rider distance"
+      },
       "rider_code": {
         "name": "Rider code"
       },
@@ -85,6 +91,11 @@
       },
       "simulate": {
         "name": "Simulate order"
+      }
+    },
+    "device_tracker": {
+      "rider": {
+        "name": "Rider"
       }
     }
   },

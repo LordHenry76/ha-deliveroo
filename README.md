@@ -1,7 +1,7 @@
 # Deliveroo for Home Assistant (unofficial)
 
-Track your Deliveroo orders in Home Assistant: status, estimated arrival, progress and the
-code to give the rider, with an event on every change so you can build automations
+Track your Deliveroo orders in Home Assistant: status, estimated arrival, progress, the
+code to give the rider and where the rider is on the map, with an event on every change so you can build automations
 (notifications, turn on the porch light when the rider is on the way, …).
 
 ![The example dashboard card through the five steps of an order](docs/card-phases.png)
@@ -16,7 +16,8 @@ code to give the rider, with an event on every change so you can build automatio
 | Country | Status |
 |---|---|
 | Italy (`deliveroo.it`) | Tested |
-| UK, Ireland, France, Belgium | Experimental: same pattern, not verified |
+| France (`deliveroo.fr`) | Tested |
+| UK, Ireland, Belgium | Experimental: same pattern, not verified |
 
 Feedback from other countries is welcome (open an issue with the diagnostics file).
 
@@ -61,10 +62,25 @@ Things to know:
 | `sensor.<name>_progress` | Progress in % |
 | `sensor.<name>_rider_code` | Code to give to the rider |
 | `sensor.<name>_restaurant` | Restaurant name |
+| `device_tracker.<name>_rider` | Live GPS position of the rider while they bring the order (unknown the rest of the time). Picture: Deliveroo's vehicle icon. Attributes: `vehicle_type`, `rider_route`, `rider_status`, `route` (remaining route as `[lat, lon]` pairs, not recorded) |
+| `sensor.<name>_rider_arrival_in` | Minutes until the rider reaches you, as computed by Deliveroo |
+| `sensor.<name>_rider_distance` | Km left along the rider's route (as the crow flies once the rider is nearby) |
 | `button.<name>_refresh_now` | Check for a new order immediately |
 | `button.<name>_simulate_order` | Replay a demo order (see below) |
 
-Entity ids follow your Home Assistant language (e.g. `sensor.<name>_fase` in Italian).
+Entity ids follow your Home Assistant language (e.g. `sensor.<name>_fase` in Italian, `sensor.<name>_etape` in French).
+
+Deliveroo only sends the rider's position once they are heading to you (from the "in transit"
+step until delivery), never while they go to the restaurant. The rider's name is not stored.
+To see the rider on a dashboard, a standard map card is enough:
+
+```yaml
+type: map
+entities:
+  - device_tracker.deliveroo_rider
+  - zone.home
+hours_to_show: 1
+```
 
 ## Options
 
@@ -117,8 +133,8 @@ device, so check yours in **Settings → Entities** and find/replace them in the
 ## Try it without ordering
 
 Press **Simulate order** (on the device page, under *Diagnostic*) to replay a full demo delivery
-in about two and a half minutes: the five steps, progress, arrival time, rider code and the final
-delivery. It drives the same sensors and fires the same `deliveroo_order_update` events as a real
+in about two and a half minutes: the five steps, progress, arrival time, rider code, a rider
+driving to your home location on the map and the final delivery. It drives the same sensors and fires the same `deliveroo_order_update` events as a real
 order, so you can build and check dashboards and notifications. Deliveroo is not contacted while
 the demo runs.
 
@@ -149,7 +165,8 @@ to the API host (`api.<country>.deliveroo.com`):
 ## Diagnostics
 
 **Settings → Devices & services → Deliveroo → ⋮ → Download diagnostics** exports the raw
-order status (tokens, phone numbers, links and rider notices are redacted). Please attach it to issues about
+order status and the map entries (tokens, phone numbers, links, rider notices, names and
+coordinates are redacted). Please attach it to issues about
 unknown states.
 
 ## Brand images

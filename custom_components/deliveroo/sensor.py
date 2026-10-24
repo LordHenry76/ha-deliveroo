@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorEntityDescription,
 )
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfLength, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -79,6 +79,21 @@ SENSORS: tuple[DeliverooSensorDescription, ...] = (
         translation_key="progress",
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda s: s.progress,
+    ),
+    DeliverooSensorDescription(
+        key="rider_minutes",
+        translation_key="rider_minutes",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=lambda s: s.rider_minutes,
+    ),
+    DeliverooSensorDescription(
+        key="rider_distance",
+        translation_key="rider_distance",
+        device_class=SensorDeviceClass.DISTANCE,
+        native_unit_of_measurement=UnitOfLength.KILOMETERS,
+        suggested_display_precision=1,
+        value_fn=lambda s: s.rider_distance,
     ),
     DeliverooSensorDescription(
         key="rider_code",

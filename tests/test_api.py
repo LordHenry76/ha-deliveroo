@@ -387,8 +387,10 @@ def test_demo_payload_matches_the_real_document_shape() -> None:
     progresses = [f.progress for f in frames]
     assert progresses == sorted(progresses) and progresses[0] == 0
     assert all(len(f.steps) == 5 and not f.is_completed for f in frames)
-    assert {f.rider_route for f in frames[:18]} == {"TO_RESTAURANT"}
+    assert {f.rider_route for f in frames[:17]} == {None}
+    assert frames[17].rider_route == "TO_RESTAURANT"
     assert {f.rider_route for f in frames[18:]} == {"TO_CUSTOMER"}
+    assert {f.rider_status for f in frames[:18]} == {None}
     assert frames[0].eta == "13:02–13:12"
     assert frames[0].estimated_delivery.isoformat() == "2026-10-05T11:02:30+00:00"
 
@@ -398,3 +400,103 @@ def test_demo_payload_matches_the_real_document_shape() -> None:
 
     english = api.parse_order_status("demo", sim.build_demo_payload(100, 150, lang="xx", start_local=start))
     assert english.step_title == "In transit" and english.advisory
+
+
+# ── Rider on the map ─────────────────────────────────────────────────────────
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def test_decode_polyline() -> None:
+    # Example from Google's polyline documentation
+    assert api.decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@") == [
+        (38.5, -120.2), (40.7, -120.95), (43.252, -126.453)
+    ]
+    assert api.decode_polyline("") == []
+    assert api.decode_polyline("_p~iF~ps|U_ul") == [(38.5, -120.2)]
+
+
+def test_parse_status_rider_en_route() -> None:
+    """Anonymised real fr document: rider heading to the customer."""
+    status = api.parse_order_status("10000000001", load_fixture("order_status_fr_en_route.json"))
+    assert status.step_title == "En cours de livraison"
+    assert status.rider_minutes == 14
+    rider = status.rider
+    assert rider.position == (48.8656, 2.3402)
+    assert rider.vehicle_type == "SCOOTER"
+    assert rider.icon_url.endswith("scooter.png?width=128&fit=contain")
+    assert rider.route[0] == rider.position and rider.route[-1] == (48.8566, 2.3522)
+    assert status.customer_location == (48.8566, 2.3522)
+    # Along the route (1.9 km), not analytics.rider_route_distance
+    assert 1.85 < status.rider_distance < 1.95
+    assert "Rider Name" not in repr(rider)
+
+
+def test_parse_status_rider_nearby() -> None:
+    """No route once nearby: distance as the crow flies."""
+    status = api.parse_order_status("10000000001", load_fixture("order_status_fr_nearby.json"))
+    assert status.rider_status == "nearby" and status.rider_minutes == 0
+    assert status.rider.route == []
+    assert 0.05 < status.rider_distance < 0.08
+
+
+def test_parse_status_without_rider() -> None:
+    payload = load_fixture("order_status_fr_en_route.json")
+    payload["included"] = [i for i in payload["included"] if i["type"] == "order"]
+    status = api.parse_order_status("1", payload)
+    assert status.rider is None and status.rider_distance is None
+    # Rider entry without a location (or with bad coordinates): no position
+    rider_only = load_fixture("order_status_fr_en_route.json")
+    for item in rider_only["included"]:
+        if item["type"] == "location":
+            item["attributes"]["latitude"] = None
+    status = api.parse_order_status("1", rider_only)
+    assert status.rider.position is None and status.rider_distance is None
+
+
+def test_demo_payload_drives_a_rider_to_home() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    sim = sys.modules.get("deliveroo_simulation")
+    if sim is None:
+        sim_spec = importlib.util.spec_from_file_location(
+            "deliveroo_simulation", API_PATH.with_name("simulation.py")
+        )
+        sim = importlib.util.module_from_spec(sim_spec)
+        sim_spec.loader.exec_module(sim)
+
+    assert sim.encode_polyline([(38.5, -120.2), (40.7, -120.95), (43.252, -126.453)]) == (
+        "_p~iF~ps|U_ulLnnqC_mqNvxq`@"
+    )
+    home = (48.8566, 2.3522)
+    start = datetime(2026, 10, 5, 13, 0, tzinfo=timezone(timedelta(hours=2)))
+    frames = [
+        api.parse_order_status(
+            "demo", sim.build_demo_payload(t, 150, lang="fr", start_local=start, home=home)
+        )
+        for t in range(0, 155, 5)
+    ]
+    assert all(f.rider is None for f in frames if (f.step_index or 0) < 4)
+    moving = [f for f in frames if f.step_index == 4]
+    distances = [f.rider_distance for f in moving]
+    assert distances == sorted(distances, reverse=True) and distances[0] > 2
+    assert all(f.rider.route[-1] == home for f in moving)
+    nearby = [f for f in frames if f.step_index == 5]
+    assert all(f.rider.route == [] and f.rider_minutes == 0 for f in nearby)
+    assert all(f.rider_distance < 0.1 for f in nearby)
+    assert frames[-1].is_completed and frames[-1].rider is None
+    # Rider fields follow the real API: status only once heading to the customer,
+    # route and status gone once delivered
+    assert {f.rider_status for f in frames if (f.step_index or 0) < 4} == {None}
+    assert {f.rider_status for f in moving} == {"en-route"}
+    assert {f.rider_status for f in nearby} == {"nearby"}
+    assert frames[-1].rider_route is None and frames[-1].rider_status is None
+    assert frames[0].step_title == "Confirmation en cours"
+    assert frames[-1].message == "Votre commande est arrivée. Bon appétit !"
+    # Without a home location the demo has no map
+    no_home = sim.build_demo_payload(100, 150, lang="fr", start_local=start)
+    assert api.parse_order_status("demo", no_home).rider is None

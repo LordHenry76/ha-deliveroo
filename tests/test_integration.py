@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +30,7 @@ from custom_components.deliveroo.api import (
     DeliverooOrderStatus,
     DeliverooStep,
     DeliverooUser,
+    parse_order_status,
 )
 from custom_components.deliveroo.const import (
     CONF_ACTIVE_INTERVAL,
@@ -532,6 +534,82 @@ async def test_diagnostics_redacts_third_party_data(hass: HomeAssistant, api) ->
     assert diag["status"]["raw_attributes"]["message"] == "Il tuo ordine è stato ritirato"
 
 
+# ── Rider on the map ─────────────────────────────────────────────────────────
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def fixture_status(name: str) -> DeliverooOrderStatus:
+    payload = json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+    return parse_order_status("222", payload)
+
+
+async def test_rider_tracker_and_sensors(hass: HomeAssistant, api) -> None:
+    entry = await setup_entry(hass)
+
+    # Preparing: no map yet
+    tracker = hass.states.get("device_tracker.deliveroo_rider")
+    assert tracker.state == "unknown"
+    assert "latitude" not in tracker.attributes
+    assert "rider_route" not in tracker.attributes and "entity_picture" not in tracker.attributes
+    assert hass.states.get("sensor.deliveroo_rider_distance").state == "unknown"
+
+    api.status.return_value = fixture_status("order_status_fr_en_route.json")
+    await tick(hass, ACTIVE_INTERVAL)
+    tracker = hass.states.get("device_tracker.deliveroo_rider")
+    assert tracker.state == "not_home"
+    assert tracker.attributes["latitude"] == 48.8656
+    assert tracker.attributes["longitude"] == 2.3402
+    assert tracker.attributes["source_type"] == "gps"
+    assert tracker.attributes["vehicle_type"] == "SCOOTER"
+    assert tracker.attributes["rider_route"] == "TO_CUSTOMER"
+    assert tracker.attributes["route"][0] == [48.8656, 2.3402]
+    assert tracker.attributes["entity_picture"].endswith("width=128&fit=contain")
+    assert "Rider Name" not in str(tracker.attributes)
+    assert hass.states.get("sensor.deliveroo_rider_arrival_in").state == "14"
+    assert float(hass.states.get("sensor.deliveroo_rider_distance").state) == pytest.approx(1.9, abs=0.05)
+
+    from custom_components.deliveroo.diagnostics import (
+        async_get_config_entry_diagnostics,
+    )
+
+    diag = await async_get_config_entry_diagnostics(hass, entry)
+    dumped = str(diag)
+    assert "Rider Name" not in dumped and "48.8656" not in dumped
+    assert diag["status"]["rider"] == {"has_position": True, "vehicle_type": "SCOOTER", "route_points": 5}
+    assert {i["attributes"]["type"] for i in diag["status"]["raw_included"] if i["type"] == "location"} == {
+        "CUSTOMER", "RIDER"
+    }
+
+    # Delivered: the rider leaves the map
+    api.status.return_value = status(message="Livrée", is_completed=True)
+    await tick(hass, ACTIVE_INTERVAL * 2)
+    tracker = hass.states.get("device_tracker.deliveroo_rider")
+    assert tracker.state == "unknown" and "vehicle_type" not in tracker.attributes
+    assert hass.states.get("sensor.deliveroo_rider_arrival_in").state == "unknown"
+
+
+async def test_simulated_rider_drives_to_home(hass: HomeAssistant, api, freezer) -> None:
+    from custom_components.deliveroo.const import SIMULATION_DURATION, SIMULATION_INTERVAL
+
+    api.active.return_value = []
+    await setup_entry(hass)
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.deliveroo_simulate_order"}, blocking=True
+    )
+    distances = []
+    for _ in range(int(SIMULATION_DURATION / SIMULATION_INTERVAL) - 1):
+        freezer.tick(SIMULATION_INTERVAL)
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        distance = hass.states.get("sensor.deliveroo_rider_distance").state
+        if distance != "unknown":
+            distances.append(float(distance))
+    assert distances == sorted(distances, reverse=True) and distances[-1] < 0.1
+    tracker = hass.states.get("device_tracker.deliveroo_rider")
+    assert tracker.attributes["latitude"] == pytest.approx(hass.config.latitude, abs=0.001)
+
+
 # ── Demo order ───────────────────────────────────────────────────────────────
 
 
@@ -578,15 +656,18 @@ async def test_simulated_order_runs_end_to_end(hass: HomeAssistant, api, freezer
     freezer.tick(SIMULATION_INTERVAL)
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
-    assert hass.states.get("sensor.deliveroo_order_status").state == "completed"
+    done = hass.states.get("sensor.deliveroo_order_status")
+    assert done.state == "completed"
+    assert done.attributes["rider_route"] is None and done.attributes["rider_status"] is None
     assert hass.states.get("binary_sensor.deliveroo_active_order").state == "off"
     assert not coordinator.simulation_active
     assert coordinator.update_interval == IDLE_INTERVAL
 
-    # One event per step plus the delivery, all flagged as simulated
-    assert [e.data["step_index"] for e in events] == [1, 2, 3, 4, 5, None]
+    # One event per step, one when the rider is assigned, one for the delivery
+    assert [e.data["step_index"] for e in events] == [1, 2, 3, 3, 4, 5, None]
     assert all(e.data["simulated"] is True for e in events)
-    assert events[3].data["advisory"] and events[3].data["rider_route"] == "TO_CUSTOMER"
+    assert [e.data["rider_route"] for e in events[2:5]] == [None, "TO_RESTAURANT", "TO_CUSTOMER"]
+    assert events[4].data["advisory"] and events[4].data["rider_status"] == "en-route"
     assert events[-1].data["is_completed"] is True
 
     # Deliveroo was never contacted during the demo, and normal polling resumes after it

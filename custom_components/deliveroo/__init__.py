@@ -11,7 +11,12 @@ from .api import DeliverooClient
 from .const import CONF_MARKET, CONF_TOKEN
 from .coordinator import DeliverooConfigEntry, DeliverooCoordinator
 
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.BUTTON, Platform.SENSOR]
+PLATFORMS: list[Platform] = [
+    Platform.BINARY_SENSOR,
+    Platform.BUTTON,
+    Platform.DEVICE_TRACKER,
+    Platform.SENSOR,
+]
 
 
 def create_client(

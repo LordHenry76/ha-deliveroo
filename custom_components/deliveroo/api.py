@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -48,7 +49,7 @@ STATUS_PATH = "/consumer/v2-6/consumer_order_statuses/{order_id}"
 ORDER_HISTORY_PATH = "/consumer/order-history/v1/orders"
 USER_PATH = "/orderapp/v1/users/{customer_id}"
 
-# Only "it" has been verified end to end. The others follow the same pattern
+# "it" and "fr" have been verified end to end. The others follow the same pattern
 # (web domain + api.<market>.deliveroo.com) and are considered experimental.
 MARKETS: dict[str, dict[str, str]] = {
     "it": {"web": "https://deliveroo.it", "api": "https://api.it.deliveroo.com", "lang": "it"},
@@ -208,6 +209,64 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else None
 
 
+def decode_polyline(encoded: str) -> list[tuple[float, float]]:
+    """Decode a Google encoded polyline (precision 1e5) into (lat, lon) points."""
+    points: list[tuple[float, float]] = []
+    index = lat = lon = 0
+    length = len(encoded)
+    try:
+        while index < length:
+            deltas = []
+            for _ in range(2):
+                shift = result = 0
+                while True:
+                    byte = ord(encoded[index]) - 63
+                    index += 1
+                    result |= (byte & 0x1F) << shift
+                    shift += 5
+                    if byte < 0x20:
+                        break
+                deltas.append(~(result >> 1) if result & 1 else result >> 1)
+            lat += deltas[0]
+            lon += deltas[1]
+            points.append((lat / 1e5, lon / 1e5))
+    except IndexError:
+        _LOGGER.debug("Truncated route polyline, keeping %s points", len(points))
+    return points
+
+
+def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance between two (lat, lon) points, in km."""
+    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
+    h = (
+        math.sin((lat2 - lat1) / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    )
+    return 2 * 6371.0088 * math.asin(math.sqrt(h))
+
+
+@dataclass(slots=True)
+class DeliverooRider:
+    """The rider on the map: only sent while ``show_map`` is true.
+
+    The rider's name is deliberately not kept (third-party personal data).
+    """
+
+    latitude: float | None
+    longitude: float | None
+    vehicle_type: str | None = None
+    icon_url: str | None = None
+    # Remaining route, from the rider to the customer; empty once nearby.
+    route: list[tuple[float, float]] = field(default_factory=list)
+
+    @property
+    def position(self) -> tuple[float, float] | None:
+        """(lat, lon) of the rider, if known."""
+        if self.latitude is None or self.longitude is None:
+            return None
+        return (self.latitude, self.longitude)
+
+
 @dataclass(slots=True)
 class DeliverooOrderStatus:
     """Live tracking data for one order."""
@@ -230,7 +289,29 @@ class DeliverooOrderStatus:
     rider_status: str | None = None
     estimated_delivery: datetime | None = None
     steps: list[DeliverooStep] = field(default_factory=list)
+    rider: DeliverooRider | None = None
+    customer_location: tuple[float, float] | None = None
+    # Minutes until the rider reaches the customer (analytics.rider_route_duration).
+    rider_minutes: int | None = None
     raw_attributes: dict[str, Any] = field(default_factory=dict, repr=False)
+    raw_included: list[dict[str, Any]] = field(default_factory=list, repr=False)
+
+    @property
+    def rider_distance(self) -> float | None:
+        """Km left to the customer: along the route, else as the crow flies.
+
+        ``analytics.rider_route_distance`` is not used: it jumps randomly.
+        """
+        rider = self.rider
+        if rider is None or (position := rider.position) is None:
+            return None
+        if len(rider.route) >= 2:
+            return sum(
+                haversine_km(a, b) for a, b in zip(rider.route, rider.route[1:])
+            )
+        if self.customer_location is not None:
+            return haversine_km(position, self.customer_location)
+        return None
 
     @property
     def step_index(self) -> int | None:
@@ -345,16 +426,71 @@ def parse_order_list(payload: Any) -> list[DeliverooOrder]:
     return orders
 
 
+def _coordinates(attrs: dict[str, Any]) -> tuple[float, float] | None:
+    lat, lon = attrs.get("latitude"), attrs.get("longitude")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon)):
+        return None
+    return (float(lat), float(lon))
+
+
+def _parse_rider(included: list[dict[str, Any]]) -> tuple[
+    DeliverooRider | None, tuple[float, float] | None
+]:
+    """Return the rider and the customer location from the ``included`` entries.
+
+    The ``RIDER`` location id is ``rider-`` + the id of the ``rider`` entry.
+    """
+    locations: dict[str, tuple[float, float]] = {}
+    customer: tuple[float, float] | None = None
+    riders: dict[str, dict[str, Any]] = {}
+    for item in included:
+        attrs = item.get("attributes")
+        if not isinstance(attrs, dict):
+            continue
+        if item.get("type") == "rider":
+            riders[str(item.get("id"))] = attrs
+        elif item.get("type") == "location":
+            coordinates = _coordinates(attrs)
+            if coordinates is None:
+                continue
+            if attrs.get("type") == "RIDER":
+                locations[str(item.get("id"))] = coordinates
+            elif attrs.get("type") == "CUSTOMER" and customer is None:
+                customer = coordinates
+
+    if not locations and not riders:
+        return None, customer
+    rider_id = next(iter(riders), None)
+    position = locations.get(f"rider-{rider_id}") or next(iter(locations.values()), None)
+    attrs = riders.get(rider_id, {}) if rider_id is not None else {}
+
+    polyline = attrs.get("route_polyline_points")
+    vehicle = attrs.get("vehicle_type")
+    icon = attrs.get("map_icon_url")
+    return (
+        DeliverooRider(
+            latitude=position[0] if position else None,
+            longitude=position[1] if position else None,
+            vehicle_type=vehicle if isinstance(vehicle, str) and vehicle else None,
+            icon_url=icon.replace("{w}", "128") if isinstance(icon, str) and icon else None,
+            route=decode_polyline(polyline) if isinstance(polyline, str) else [],
+        ),
+        customer,
+    )
+
+
 def parse_order_status(order_id: str, payload: dict[str, Any]) -> DeliverooOrderStatus:
     """Parse a consumer_order_statuses JSON:API document."""
     data = payload.get("data") or {}
     attrs: dict[str, Any] = data.get("attributes") or {}
+    included = [i for i in payload.get("included") or [] if isinstance(i, dict)]
 
     order_attrs: dict[str, Any] = {}
-    for item in payload.get("included") or []:
+    for item in included:
         if item.get("type") == "order":
             order_attrs = item.get("attributes") or {}
             break
+    rider, customer = _parse_rider(included)
 
     progress = attrs.get("current_progress_percentage")
     analytics = attrs.get("analytics") if isinstance(attrs.get("analytics"), dict) else {}
@@ -370,6 +506,7 @@ def parse_order_status(order_id: str, payload: dict[str, Any]) -> DeliverooOrder
         if isinstance(step, dict)
     ]
     rider_code = attrs.get("rider_validation_code_s") or attrs.get("rider_validation_code")
+    minutes = analytics.get("rider_route_duration")
 
     return DeliverooOrderStatus(
         order_id=str(order_id),
@@ -390,7 +527,13 @@ def parse_order_status(order_id: str, payload: dict[str, Any]) -> DeliverooOrder
         rider_status=analytics.get("rider_status"),
         estimated_delivery=_parse_datetime(analytics.get("estimated_delivery_time")),
         steps=steps,
+        rider=rider,
+        customer_location=customer,
+        rider_minutes=int(minutes)
+        if isinstance(minutes, (int, float)) and not isinstance(minutes, bool)
+        else None,
         raw_attributes=attrs,
+        raw_included=[i for i in included if i.get("type") in ("location", "rider")],
     )
 
 

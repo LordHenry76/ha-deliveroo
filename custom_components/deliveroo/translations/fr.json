@@ -1,0 +1,118 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Deliveroo",
+        "description": "Intégration non officielle : elle lit l'état de vos commandes via la même API que le site Deliveroo. Testée en Italie et en France.",
+        "data": {
+          "market": "Pays",
+          "consumer_auth_token": "Cookie de session"
+        },
+        "data_description": {
+          "consumer_auth_token": "Valeur du cookie `consumer_auth_token` du site Deliveroo de votre pays (outils de développement du navigateur → Application → Cookies). Ne vous déconnectez pas du site après l'avoir copiée : cela l'invaliderait."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Session Deliveroo expirée",
+        "description": "Reconnectez-vous sur le site Deliveroo et collez le nouveau cookie `consumer_auth_token`.",
+        "data": {
+          "consumer_auth_token": "Cookie de session"
+        },
+        "data_description": {
+          "consumer_auth_token": "Valeur du cookie `consumer_auth_token` du site Deliveroo de votre pays (outils de développement du navigateur → Application → Cookies). Ne vous déconnectez pas du site après l'avoir copiée : cela l'invaliderait."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Deliveroo n'accepte pas ce cookie : il a expiré ou vous vous êtes déconnecté. Reconnectez-vous sur le site et copiez la valeur actuelle.",
+      "blocked": "La protection anti-robots de Deliveroo a rejeté la requête. Réessayez plus tard.",
+      "cannot_connect": "Impossible de se connecter à Deliveroo.",
+      "unknown": "Erreur inattendue.",
+      "invalid_format": "Ce n'est pas le bon cookie : il faut la valeur de `consumer_auth_token`, qui commence par `eyJ`."
+    },
+    "abort": {
+      "already_configured": "Ce compte Deliveroo est déjà configuré.",
+      "reauth_successful": "Session mise à jour.",
+      "wrong_account": "Ce cookie appartient à un autre compte Deliveroo."
+    }
+  },
+  "selector": {
+    "market": {
+      "options": {
+        "it": "Italia",
+        "uk": "United Kingdom",
+        "ie": "Ireland",
+        "fr": "France",
+        "be": "Belgique / België"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "order_active": {
+        "name": "Commande en cours"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Statut de la commande"
+      },
+      "message": {
+        "name": "Message de suivi"
+      },
+      "eta": {
+        "name": "Arrivée estimée"
+      },
+      "progress": {
+        "name": "Progression"
+      },
+      "rider_minutes": {
+        "name": "Arrivée du livreur dans"
+      },
+      "rider_distance": {
+        "name": "Distance du livreur"
+      },
+      "rider_code": {
+        "name": "Code livreur"
+      },
+      "restaurant": {
+        "name": "Restaurant"
+      },
+      "step": {
+        "name": "Étape"
+      },
+      "estimated_delivery": {
+        "name": "Heure de livraison estimée"
+      }
+    },
+    "button": {
+      "refresh": {
+        "name": "Actualiser maintenant"
+      },
+      "simulate": {
+        "name": "Simuler une commande"
+      }
+    },
+    "device_tracker": {
+      "rider": {
+        "name": "Livreur"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fréquence d'actualisation",
+        "description": "À quelle fréquence Home Assistant interroge Deliveroo. La recherche de nouvelles commandes est une toute petite requête (quelques octets), elle peut donc être fréquente.",
+        "data": {
+          "idle_interval": "Chercher de nouvelles commandes toutes les",
+          "active_interval": "Actualiser une commande en cours toutes les"
+        },
+        "data_description": {
+          "idle_interval": "En secondes, entre 15 et 900.",
+          "active_interval": "En secondes, entre 10 et 120. Le site Deliveroo lui-même s'actualise environ toutes les 15 secondes."
+        }
+      }
+    }
+  }
+}

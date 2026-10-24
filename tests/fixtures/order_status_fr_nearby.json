@@ -1,0 +1,162 @@
+{
+  "data": {
+    "type": "consumer_order_status",
+    "id": "consumer_order_status_10000000001",
+    "attributes": {
+      "title": "Nouvelle heure d'arrivée",
+      "eta_message": "Moins d'une minute",
+      "message": "Rider Name est à proximité",
+      "emphasize_advisory": true,
+      "fulfillment_type": "DELIVERY",
+      "ui_status": "PROCESSING",
+      "is_failed": false,
+      "is_completed": false,
+      "redirect_to_order_history": false,
+      "processing_steps": [
+        {
+          "title": "Confirmation en cours",
+          "ends_at_progress_percentage": 10,
+          "is_current": false
+        },
+        {
+          "title": "Acceptation en cours",
+          "ends_at_progress_percentage": 30,
+          "is_current": false
+        },
+        {
+          "title": "En cours de préparation",
+          "ends_at_progress_percentage": 70,
+          "is_current": false
+        },
+        {
+          "title": "En cours de livraison",
+          "ends_at_progress_percentage": 90,
+          "is_current": false
+        },
+        {
+          "title": "À proximité",
+          "ends_at_progress_percentage": 100,
+          "is_current": true
+        }
+      ],
+      "show_live_indicator": false,
+      "show_share_order_tracker_link": true,
+      "show_map": true,
+      "can_show_rate_app": true,
+      "can_show_rewards_progress": true,
+      "analytics": {
+        "platform": "web",
+        "locale": "fr",
+        "country_code": "FR",
+        "zone_code": "TEST",
+        "status_message": "Delivering",
+        "estimated_delivery_time": "2026-10-24T11:40:44Z",
+        "rider_status": "nearby",
+        "single_pickup_stacked": false,
+        "multi_pickup_stacked": false,
+        "stack_leg": "none",
+        "allow_complementary_orders": "feature",
+        "delivery_drn_id": "00000000-0000-4000-8000-0000000000dd",
+        "rider_route_duration": 0,
+        "rider_route_distance": 95.9050085888107,
+        "rider_route_cache_reason": "rider_stationary",
+        "rider_route_cache_age": 8
+      },
+      "updated_at": "2026-10-24 13:24:08 +0200",
+      "updated_at_formatted": "Mise à jour 13:24",
+      "colour_scheme": "teal",
+      "are_processing_steps_expandable": true,
+      "header_display_state": "CLOSED",
+      "sheet_display_state": "COLLAPSED",
+      "emphasize_title": true,
+      "authenticated_via": "basic_or_jwt",
+      "rider_route": "TO_CUSTOMER",
+      "rider_validation_code": 42,
+      "rider_validation_code_s": "42",
+      "rider_validation_code_title": "Donnez ce code à\nvotre livreur ou livreuse",
+      "rider_validation_code_subtitle": "une fois que vous avez bien reçu la commande.",
+      "delivery_header": "Livraison",
+      "order_summary_collapsible": true,
+      "completed_order_celebration": false,
+      "branch_type": "RESTAURANT",
+      "variable_weight_pre_auth_enabled": false,
+      "current_progress_percentage": 88
+    },
+    "relationships": {
+      "order": {
+        "data": {
+          "id": "10000000001",
+          "type": "order"
+        }
+      },
+      "locations": {
+        "data": [
+          {
+            "id": "customer-00000000-0000-4000-8000-0000000000cc",
+            "type": "location"
+          },
+          {
+            "id": "rider-00000000-0000-4000-8000-000000000001",
+            "type": "location"
+          }
+        ]
+      },
+      "riders": {
+        "data": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "type": "rider"
+          }
+        ]
+      }
+    }
+  },
+  "included": [
+    {
+      "type": "order",
+      "id": "10000000001",
+      "attributes": {
+        "order_number": "0001",
+        "restaurant_name": "Restaurant Test"
+      }
+    },
+    {
+      "id": "customer-00000000-0000-4000-8000-0000000000cc",
+      "type": "location",
+      "attributes": {
+        "latitude": 48.8566,
+        "longitude": 2.3522,
+        "type": "CUSTOMER",
+        "pin_type": "star-circle"
+      }
+    },
+    {
+      "id": "rider-00000000-0000-4000-8000-000000000001",
+      "type": "location",
+      "attributes": {
+        "latitude": 48.857,
+        "longitude": 2.3515,
+        "type": "RIDER"
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type": "rider",
+      "attributes": {
+        "name": "Rider Name",
+        "subtitle": "Scooter",
+        "vehicle_type": "SCOOTER",
+        "route_polyline_points": "",
+        "map_icon_url": "https://order-status-public-assets.roocdn.com/images/rider_icons/default/scooter.png?width={w}&fit=contain",
+        "map_icon_selected_url": "https://order-status-public-assets.roocdn.com/images/rider_icons/default/scooter_selected.png?width={w}&fit=contain",
+        "call_button": {
+          "title": "Appeler"
+        },
+        "chat_button": {
+          "title": "Discuter"
+        },
+        "delivery_drn": "drn:roo:delivery:fr:00000000-0000-4000-8000-0000000000dd"
+      }
+    }
+  ]
+}

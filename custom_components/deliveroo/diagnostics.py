@@ -23,6 +23,14 @@ TO_REDACT = {
     # May contain the rider's name: third-party personal data.
     "advisory",
     "delivery_drn_id",
+    # Rider and customer map entries.
+    "name",
+    "latitude",
+    "longitude",
+    "route_polyline_points",
+    "call_button",
+    "chat_button",
+    "delivery_drn",
 }
 
 
@@ -53,6 +61,14 @@ async def async_get_config_entry_diagnostics(
             "progress": status.progress,
             "is_completed": status.is_completed,
             "is_failed": status.is_failed,
+            "rider": None
+            if status.rider is None
+            else {
+                "has_position": status.rider.position is not None,
+                "vehicle_type": status.rider.vehicle_type,
+                "route_points": len(status.rider.route),
+            },
             "raw_attributes": async_redact_data(status.raw_attributes, TO_REDACT),
+            "raw_included": async_redact_data(status.raw_included, TO_REDACT),
         },
     }

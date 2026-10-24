@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Deliveroo",
-        "description": "Integrazione non ufficiale: legge lo stato degli ordini dalle stesse API usate dal sito Deliveroo. Solo l'Italia è stata testata a fondo.",
+        "description": "Integrazione non ufficiale: legge lo stato degli ordini dalle stesse API usate dal sito Deliveroo. Testata in Italia e in Francia.",
         "data": {
           "market": "Paese",
           "consumer_auth_token": "Cookie di sessione"
@@ -66,6 +66,12 @@
       "progress": {
         "name": "Avanzamento"
       },
+      "rider_minutes": {
+        "name": "Arrivo del rider tra"
+      },
+      "rider_distance": {
+        "name": "Distanza del rider"
+      },
       "rider_code": {
         "name": "Codice rider"
       },
@@ -85,6 +91,11 @@
       },
       "simulate": {
         "name": "Simula ordine"
+      }
+    },
+    "device_tracker": {
+      "rider": {
+        "name": "Rider"
       }
     }
   },
